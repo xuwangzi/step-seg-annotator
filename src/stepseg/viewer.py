@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 from ctypes import c_char_p, c_void_p, py_object, pythonapi
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtWidgets import QWidget
+from PyQt5.QtCore import QPoint, Qt, pyqtSignal
+from PyQt5.QtWidgets import QWidget
 
 from OCP.AIS import AIS_ColoredShape, AIS_InteractiveContext, AIS_Shape
 from OCP.Aspect import Aspect_DisplayConnection
@@ -18,7 +18,7 @@ from .topology import ImportedBody
 
 
 class OccViewport(QWidget):
-    face_picked = Signal(str, str)
+    face_picked = pyqtSignal(str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -60,7 +60,7 @@ class OccViewport(QWidget):
     def _native_handle_capsule(self):
         """Convert Qt's native view handle to the PyCapsule requested by OCP.
 
-        PySide6 exposes ``winId`` as an integer on macOS and Windows, whereas
+        PyQt5 exposes ``winId`` as an integer-like handle on macOS and Windows, whereas
         OCP's native-window constructors deliberately accept a Python capsule.
         """
         capsule_new = pythonapi.PyCapsule_New
@@ -139,14 +139,14 @@ class OccViewport(QWidget):
         self._view.SetZoom(1.15 if event.angleDelta().y() > 0 else 0.87)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        self._press = event.position().toPoint()
+        self._press = event.pos()
         self._last = self._press
         self._rotating = event.button() == Qt.LeftButton
         if self._rotating:
             self._view.StartRotation(self._press.x(), self._press.y())
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
-        position = event.position().toPoint()
+        position = event.pos()
         if event.buttons() & Qt.LeftButton and event.modifiers() == Qt.NoModifier:
             self._view.Rotation(position.x(), position.y())
         elif event.buttons() & Qt.MiddleButton:
@@ -158,7 +158,7 @@ class OccViewport(QWidget):
         self._last = position
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
-        position = event.position().toPoint()
+        position = event.pos()
         distance = abs(position.x() - self._press.x()) + abs(position.y() - self._press.y())
         if event.button() == Qt.LeftButton and distance < 5:
             self._context.MoveTo(position.x(), position.y(), self._view, True)

@@ -1,26 +1,12 @@
 """Desktop annotation application."""
-# ruff: noqa: E402
 
 from __future__ import annotations
 
-import importlib.util
-import os
 import sys
 from pathlib import Path
 
-
-def _configure_qt_environment() -> None:
-    """Set the PySide6 platform-plugin path before Qt loads its application layer."""
-    spec = importlib.util.find_spec("PySide6")
-    if spec and spec.submodule_search_locations:
-        package_root = Path(next(iter(spec.submodule_search_locations)))
-        os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(package_root / "Qt/plugins/platforms"))
-
-
-_configure_qt_environment()
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
@@ -57,11 +43,6 @@ CANDIDATE_LABELS = {
     "tangent": "相切光滑区",
     "connected": "全部连通区",
 }
-
-
-def configure_qt_plugins() -> None:
-    """Make PySide6 wheels find their bundled Cocoa/Windows/Linux platform plugin."""
-    _configure_qt_environment()
 
 
 class TaxonomyDialog(QDialog):
@@ -496,7 +477,7 @@ class MainWindow(QMainWindow):
         if not self.document:
             return
         dialog = TaxonomyDialog(self.document.taxonomy, self)
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec_() != QDialog.Accepted:
             return
         try:
             self.document.taxonomy = dialog.values()
@@ -531,9 +512,8 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    configure_qt_plugins()
     app = QApplication(sys.argv)
     initial = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     window = MainWindow(initial)
     window.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec_())
