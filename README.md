@@ -1,14 +1,18 @@
 # STEP-Seg Annotator
 
-用于 STEP B-Rep 零件的人工特征实例分割工具。它以面为最小标注单元：导入 STEP，选中一个面，预览规则候选，确认后将面组归入一个带类别的实例。
+用于把已经融合的 STEP 零件人工切分为多个独立、封闭的 OpenCascade Solid。工具以表面点击作为入口，推荐能够真正切开当前实体的平面，预览后由用户确认。
 
-## 当前 MVP
+## 当前 v2 功能
 
-- 导入 `.step` / `.stp`，支持一个文件中的多个 solid；
-- OpenCascade 原生视图：旋转、平移、缩放、标准视角、线框；
-- 面级点击、候选区域预览、手动增删面、实例创建/修改、底面标记；
-- 原生 `.stepanno.json` 保存、自动保存、校验与 AAGNet 标签导出；
-- 标签体系可在界面中维护，`background` 为保留类别。
+- 导入 `.step` / `.stp`，原文件中的每个 Solid 初始化为一个实体；
+- 点击实体表面，搜索并排序有效平面切分候选；
+- 彩色预览切分结果，确认后生成多个闭合 Solid；
+- 实体独立选择、隐藏、命名、着色和可选分类；
+- 撤销上一次切分、重置原始模型、自动保存并重放切分历史；
+- 导出组合 STEP、每个实体的独立 STEP 和 `manifest.json`；
+- 支持多 Solid 输入，校验几何有效性和切分前后体积守恒。
+
+首版只处理具有可观察平面连接证据的加法结构，例如底座、方块、圆柱和凸台。孔、槽、凹腔、自由曲面连接以及没有可见接缝的建模历史恢复不在当前范围内。
 
 ## 安装与运行
 
@@ -17,17 +21,38 @@ uv sync --locked --dev --no-editable
 uv run --no-sync stepseg-annotator
 ```
 
-也可以直接打开文件：
+直接打开零件：
 
 ```bash
 uv run --no-sync stepseg-annotator /path/to/part.step
 ```
 
-命令行校验与导出：
+## 使用流程
+
+1. 打开 STEP，左侧显示当前所有闭合实体。
+2. 点击需要分离结构的一个外表面，右侧出现有效切平面候选。
+3. 切换候选检查彩色预览和各子实体体积，确认后提交切分。
+4. 对新实体重复点击和切分；需要时使用“撤销切分”或“重置”。
+5. 为实体填写名称和可选类别。同类结构仍保留不同的 `entity_XXXX` 实例 ID。
+6. 保存后生成与源文件同目录的 `.stepseg.json`；导出时选择一个空目录。
+
+导出目录结构：
+
+```text
+export/
+├── combined.step
+├── manifest.json
+└── entities/
+    ├── entity_0002.step
+    └── entity_0003.step
+```
+
+## 命令行
 
 ```bash
-uv run --no-sync stepseg validate /path/to/part.stepanno.json
-uv run --no-sync stepseg export-aagnet /path/to/part.stepanno.json --output exports
+uv run --no-sync stepseg inspect /path/to/part.step
+uv run --no-sync stepseg validate /path/to/part.stepseg.json
+uv run --no-sync stepseg export-solids /path/to/part.stepseg.json --output exports
 ```
 
 开发检查：
@@ -37,12 +62,4 @@ uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 ```
 
-## 标注流程
-
-1. 打开 STEP；每个 solid 的所有面会先归到各自的 `background` 实例。
-2. 单击一个面，选择规则候选（种子 / 同类曲面 / 相切 / 连通）；按住 Shift 可补面，按住 Ctrl 可删面。
-3. 选择类别后新建或更新实例；可选地为实例标记底面。
-4. 填写标注者、复核者并保存。所有面已唯一归属时，可将状态设为 `completed` 或 `reviewed`。
-5. 导出会生成 AAGNet 所需的 `seg`、`inst`、`bottom` 数据和 `source_map.json`。只有在标签体系维护了 AAGNet ID 时，才可使用严格 25 类导出。
-
-真实 CAD 与标注结果默认不进入 Git；代码仓库只保存程序、格式规范和小型合成测试。
+真实 CAD、`.stepseg.json` 和导出实体默认不进入 Git。

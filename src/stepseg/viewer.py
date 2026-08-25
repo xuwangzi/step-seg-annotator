@@ -1,20 +1,21 @@
-"""Minimal native Qt/OpenCascade face-selection viewport."""
+"""Native Qt/OpenCascade viewport for closed-solid entity segmentation."""
 
 from __future__ import annotations
 
 import sys
 from ctypes import c_char_p, c_void_p, py_object, pythonapi
-from PyQt5.QtCore import QPoint, Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget
 
 from OCP.AIS import AIS_ColoredShape, AIS_InteractiveContext, AIS_Shape
 from OCP.Aspect import Aspect_DisplayConnection
 from OCP.OpenGl import OpenGl_GraphicDriver
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopAbs import TopAbs_FACE
+from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_Viewer
+from PyQt5.QtCore import QPoint, Qt, pyqtSignal
+from PyQt5.QtWidgets import QWidget
 
-from .topology import ImportedBody
+from .topology import ENTITY_COLORS, EntityShape
 
 
 class OccViewport(QWidget):
@@ -29,9 +30,10 @@ class OccViewport(QWidget):
         self._initialized = False
         self._press = QPoint()
         self._last = QPoint()
-        self._rotating = False
-        self._bodies: list[ImportedBody] = []
-        self._ais_by_body: dict[str, AIS_ColoredShape] = {}
+        self._entities: list[EntityShape] = []
+        self._ais_by_id: dict[str, AIS_ColoredShape] = {}
+        self._hidden_ids: set[str] = set()
+        self._wireframe = False
         self._connection = Aspect_DisplayConnection()
         self._driver = OpenGl_GraphicDriver(self._connection)
         self._viewer = V3d_Viewer(self._driver)
@@ -58,21 +60,15 @@ class OccViewport(QWidget):
         return Xw_Window(self._connection, int(self.winId()))
 
     def _native_handle_capsule(self):
-        """Convert Qt's native view handle to the PyCapsule requested by OCP.
-
-        PyQt5 exposes ``winId`` as an integer-like handle on macOS and Windows, whereas
-        OCP's native-window constructors deliberately accept a Python capsule.
-        """
         capsule_new = pythonapi.PyCapsule_New
         capsule_new.argtypes = [c_void_p, c_char_p, c_void_p]
         capsule_new.restype = py_object
         return capsule_new(c_void_p(int(self.winId())), None, None)
 
     def _ensure_initialized(self) -> None:
-        if self._initialized:
-            return
-        self._view.SetWindow(self._window())
-        self._initialized = True
+        if not self._initialized:
+            self._view.SetWindow(self._window())
+            self._initialized = True
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         self._ensure_initialized()
@@ -84,38 +80,75 @@ class OccViewport(QWidget):
         if self._initialized:
             self._view.MustBeResized()
 
-    def clear(self) -> None:
-        self._context.EraseAll(True)
-        self._context.RemoveAll(True)
-        self._ais_by_body.clear()
-        self._bodies.clear()
-
-    def display_bodies(self, bodies: list[ImportedBody]) -> None:
-        self.clear()
-        self._bodies = bodies
-        selection_mode = AIS_Shape.SelectionMode_s(TopAbs_FACE)
-        for body in bodies:
-            ais = AIS_ColoredShape(body.shape)
-            self._context.Display(ais, True)
-            self._context.Activate(ais, selection_mode, True)
-            self._ais_by_body[body.id] = ais
-        self.fit_all()
-
-    def set_face_colors(self, colors: dict[str, str]) -> None:
-        for body in self._bodies:
-            ais = self._ais_by_body[body.id]
-            for face_id, face in body.faces.items():
-                color = colors.get(face_id, "#8B8B8B")
-                ais.SetCustomColor(face, self._occ_color(color))
-            self._context.Redisplay(ais, False)
-        if self._initialized:
-            self._view.Redraw()
-
     @staticmethod
     def _occ_color(hex_color: str) -> Quantity_Color:
         normalized = hex_color.lstrip("#")
         rgb = tuple(int(normalized[index : index + 2], 16) / 255 for index in (0, 2, 4))
         return Quantity_Color(*rgb, Quantity_TOC_RGB)
+
+    def _display_shape(
+        self, item_id: str, shape: TopoDS_Shape, color: str, selectable: bool
+    ) -> None:
+        ais = AIS_ColoredShape(shape)
+        ais.SetColor(self._occ_color(color))
+        self._context.Display(ais, False)
+        self._context.SetDisplayMode(ais, 0 if self._wireframe else 1, False)
+        if selectable:
+            self._context.Activate(ais, AIS_Shape.SelectionMode_s(TopAbs_FACE), True)
+        self._ais_by_id[item_id] = ais
+
+    def clear(self) -> None:
+        self._context.RemoveAll(False)
+        self._ais_by_id.clear()
+        self._entities.clear()
+
+    def display_entities(
+        self,
+        entities: list[EntityShape],
+        colors: dict[str, str],
+        selected_id: str | None = None,
+        fit: bool = False,
+    ) -> None:
+        self.clear()
+        self._entities = entities
+        for entity in entities:
+            color = "#FACC15" if entity.id == selected_id else colors.get(entity.id, "#71717A")
+            self._display_shape(entity.id, entity.shape, color, True)
+            if entity.id in self._hidden_ids:
+                self._context.Erase(self._ais_by_id[entity.id], False)
+        self._context.UpdateCurrentViewer()
+        if fit:
+            self.fit_all()
+
+    def display_preview(
+        self,
+        entities: list[EntityShape],
+        parent_id: str,
+        result_shapes: list[TopoDS_Shape],
+        colors: dict[str, str],
+    ) -> None:
+        self.clear()
+        self._entities = [entity for entity in entities if entity.id != parent_id]
+        for entity in self._entities:
+            self._display_shape(entity.id, entity.shape, colors.get(entity.id, "#71717A"), False)
+            if entity.id in self._hidden_ids:
+                self._context.Erase(self._ais_by_id[entity.id], False)
+        for index, shape in enumerate(result_shapes):
+            self._display_shape(
+                f"preview_{index}", shape, ENTITY_COLORS[index % len(ENTITY_COLORS)], False
+            )
+        self._context.UpdateCurrentViewer()
+
+    def set_entity_visible(self, entity_id: str, visible: bool) -> None:
+        ais = self._ais_by_id.get(entity_id)
+        if visible:
+            self._hidden_ids.discard(entity_id)
+            if ais:
+                self._context.Display(ais, True)
+        else:
+            self._hidden_ids.add(entity_id)
+            if ais:
+                self._context.Erase(ais, True)
 
     def fit_all(self) -> None:
         self._view.FitAll()
@@ -128,11 +161,9 @@ class OccViewport(QWidget):
         self._view.Redraw()
 
     def toggle_wireframe(self, enabled: bool) -> None:
-        for ais in self._ais_by_body.values():
-            if enabled:
-                self._context.SetDisplayMode(ais, 0, False)
-            else:
-                self._context.SetDisplayMode(ais, 1, False)
+        self._wireframe = enabled
+        for ais in self._ais_by_id.values():
+            self._context.SetDisplayMode(ais, 0 if enabled else 1, False)
         self._view.Redraw()
 
     def wheelEvent(self, event) -> None:  # type: ignore[override]
@@ -141,8 +172,7 @@ class OccViewport(QWidget):
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         self._press = event.pos()
         self._last = self._press
-        self._rotating = event.button() == Qt.LeftButton
-        if self._rotating:
+        if event.button() == Qt.LeftButton:
             self._view.StartRotation(self._press.x(), self._press.y())
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
@@ -166,9 +196,8 @@ class OccViewport(QWidget):
             self._context.InitSelected()
             if self._context.HasSelectedShape():
                 picked = self._context.SelectedShape()
-                for body in self._bodies:
-                    face_id = body.face_id_for(picked)
+                for entity in self._entities:
+                    face_id = entity.face_id_for(picked)
                     if face_id:
-                        self.face_picked.emit(body.id, face_id)
+                        self.face_picked.emit(entity.id, face_id)
                         break
-        self._rotating = False

@@ -1,55 +1,105 @@
-"""AAGNet-compatible structural label export."""
+"""Export final closed entities as STEP files plus a JSON manifest."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+from OCP.BRep import BRep_Builder
+from OCP.IFSelect import IFSelect_RetDone
+from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+from OCP.TopoDS import TopoDS_Compound
+
 from .models import AnnotationDocument
+from .topology import EntityShape
 
 
-def export_aagnet(document: AnnotationDocument, output_dir: Path, strict_mf25: bool = False) -> list[Path]:
-    errors = document.validate(require_complete=True)
+def _write_step(shape, path: Path) -> None:
+    writer = STEPControl_Writer()
+    if writer.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone:
+        raise ValueError(f"cannot transfer STEP geometry for {path.name}")
+    if writer.Write(str(path)) != IFSelect_RetDone:
+        raise ValueError(f"cannot write STEP file: {path}")
+
+
+def export_solids(
+    document: AnnotationDocument, entities: list[EntityShape], output_dir: Path
+) -> list[Path]:
+    errors = document.validate()
     if errors:
         raise ValueError("cannot export invalid annotation: " + "; ".join(errors))
+    by_id = {entity.id: entity for entity in entities}
+    if set(by_id) != {item.id for item in document.entities}:
+        raise ValueError("runtime entities do not match the annotation")
+
     output_dir.mkdir(parents=True, exist_ok=True)
+    entity_dir = output_dir / "entities"
+    entity_dir.mkdir(exist_ok=True)
     paths: list[Path] = []
-    mapping = {item.id: item.aagnet_class_id for item in document.taxonomy}
-    if strict_mf25:
-        unmapped = [item.key for item in document.taxonomy if item.aagnet_class_id is None]
-        if unmapped:
-            raise ValueError("missing MFInstSeg mappings: " + ", ".join(unmapped))
-    for body in document.bodies:
-        face_index = {face_id: index for index, face_id in enumerate(body.face_ids)}
-        count = len(body.face_ids)
-        semantic = {str(index): 0 for index in range(count)}
-        bottom = {str(index): 0 for index in range(count)}
-        instance = [[int(row == column) for column in range(count)] for row in range(count)]
-        for item in document.instances:
-            if item.body_id != body.id:
-                continue
-            class_id = mapping[item.class_id] if strict_mf25 else item.class_id
-            indexes = [face_index[face_id] for face_id in item.face_ids]
-            for index in indexes:
-                semantic[str(index)] = int(class_id or 0)
-            for row in indexes:
-                for column in indexes:
-                    instance[row][column] = 1
-            for face_id in item.bottom_face_ids:
-                bottom[str(face_index[face_id])] = 1
-        payload = [[body.id, {"seg": semantic, "inst": instance, "bottom": bottom}]]
-        path = output_dir / f"{body.id}.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    manifest_entities: list[dict[str, object]] = []
+    for record in document.entities:
+        entity = by_id[record.id]
+        builder.Add(compound, entity.shape)
+        path = entity_dir / f"{record.id}.step"
+        _write_step(entity.shape, path)
         paths.append(path)
-    (output_dir / "source_map.json").write_text(
+        category = document.class_by_id(record.class_id)
+        manifest_entities.append(
+            {
+                "id": record.id,
+                "name": record.name,
+                "class_id": record.class_id,
+                "class_key": category.key if category else None,
+                "color": record.color,
+                "note": record.note,
+                "source_body_id": record.source_body_id,
+                "step_file": str(path.relative_to(output_dir)),
+                "signature": {
+                    "volume": record.signature.volume,
+                    "centroid": record.signature.centroid,
+                    "bbox": record.signature.bbox,
+                },
+                "faces": [
+                    {
+                        "face_id": item.face_id,
+                        "source_face_id": item.source_face_id,
+                        "generated_by_split_id": item.generated_by_split_id,
+                    }
+                    for item in record.face_sources
+                ],
+            }
+        )
+
+    combined_path = output_dir / "combined.step"
+    _write_step(compound, combined_path)
+    paths.insert(0, combined_path)
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(
         json.dumps(
             {
+                "schema_version": document.schema_version,
                 "source_path": document.source_path,
                 "source_sha256": document.source_sha256,
-                "bodies": {body.id: body.face_ids for body in document.bodies},
+                "ocp_version": document.ocp_version,
+                "entities": manifest_entities,
+                "split_operations": [
+                    {
+                        "id": item.id,
+                        "parent_entity_id": item.parent_entity.id,
+                        "plane": {"normal": item.plane.normal, "offset": item.plane.offset},
+                        "result_entity_ids": item.result_entity_ids,
+                    }
+                    for item in document.split_operations
+                ],
             },
             indent=2,
+            ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+    paths.append(manifest_path)
     return paths

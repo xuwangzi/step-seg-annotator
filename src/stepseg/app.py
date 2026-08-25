@@ -1,11 +1,13 @@
-"""Desktop annotation application."""
+"""Desktop application for interactive closed-solid STEP segmentation."""
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt
+import OCP
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -13,7 +15,6 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,40 +22,40 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from .export import export_aagnet
-from .models import AnnotationDocument, FeatureInstance, TaxonomyClass, annotation_path_for
+from .export import export_solids
+from .models import AnnotationDocument, TaxonomyClass, annotation_path_for
 from .storage import load_document, save_document, source_matches
-from .topology import ImportedBody, load_step, new_document
+from .topology import (
+    ENTITY_COLORS,
+    EntityShape,
+    SplitCandidate,
+    apply_split,
+    load_step,
+    new_document,
+    planar_split_candidates,
+    replay_document,
+    undo_last_split,
+)
 from .viewer import OccViewport
 
 
-CANDIDATE_LABELS = {
-    "seed": "仅种子面",
-    "same_surface": "同类曲面连通区",
-    "tangent": "相切光滑区",
-    "connected": "全部连通区",
-}
-
-
 class TaxonomyDialog(QDialog):
-    """Small editor that keeps taxonomy IDs stable while permitting lab-specific labels."""
-
     def __init__(self, taxonomy: list[TaxonomyClass], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("标签体系")
-        self.resize(700, 420)
+        self.setWindowTitle("实体类别")
+        self.resize(620, 380)
         layout = QVBoxLayout(self)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["ID", "key", "中文名", "颜色", "AAGNet ID", "启用"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["ID", "key", "中文名", "颜色", "启用"])
         for item in taxonomy:
             self._add_row(item)
         layout.addWidget(self.table)
@@ -69,20 +70,19 @@ class TaxonomyDialog(QDialog):
     def _add_row(self, item: TaxonomyClass) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
-        values = [str(item.id), item.key, item.name_zh, item.color, "" if item.aagnet_class_id is None else str(item.aagnet_class_id)]
-        for column, value in enumerate(values):
+        for column, value in enumerate((str(item.id), item.key, item.name_zh, item.color)):
             cell = QTableWidgetItem(value)
             if column == 0:
                 cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, column, cell)
         enabled = QTableWidgetItem()
         enabled.setCheckState(Qt.Checked if item.enabled else Qt.Unchecked)
-        self.table.setItem(row, 5, enabled)
+        self.table.setItem(row, 4, enabled)
 
     def _add_new(self) -> None:
         ids = [int(self.table.item(row, 0).text()) for row in range(self.table.rowCount())]
         next_id = max(ids, default=0) + 1
-        self._add_row(TaxonomyClass(next_id, f"class_{next_id}", f"类别 {next_id}", "#64748B"))
+        self._add_row(TaxonomyClass(next_id, f"class_{next_id}", f"类别 {next_id}", "#71717A"))
 
     def values(self) -> list[TaxonomyClass]:
         values: list[TaxonomyClass] = []
@@ -92,8 +92,7 @@ class TaxonomyDialog(QDialog):
             key = self.table.item(row, 1).text().strip()
             name = self.table.item(row, 2).text().strip()
             color = self.table.item(row, 3).text().strip()
-            raw_mapping = self.table.item(row, 4).text().strip()
-            if not key or not name or not color.startswith("#") or len(color) != 7:
+            if not key or not name or len(color) != 7 or not color.startswith("#"):
                 raise ValueError("每个类别需要 key、中文名和 #RRGGBB 颜色")
             if key in keys:
                 raise ValueError(f"重复 key：{key}")
@@ -104,38 +103,45 @@ class TaxonomyDialog(QDialog):
                     key,
                     name,
                     color,
-                    int(raw_mapping) if raw_mapping else None,
-                    self.table.item(row, 5).checkState() == Qt.Checked,
+                    self.table.item(row, 4).checkState() == Qt.Checked,
                 )
             )
-        if not any(item.id == 0 for item in values):
-            raise ValueError("必须保留 background 类别（ID 0）")
         return values
 
 
 class MainWindow(QMainWindow):
     def __init__(self, initial_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("STEP-Seg Annotator")
+        self.setWindowTitle("STEP 实体分割标注工具")
         self.resize(1500, 900)
         self.step_path: Path | None = None
-        self.bodies: list[ImportedBody] = []
         self.document: AnnotationDocument | None = None
-        self.active_body_id = ""
-        self.working_faces: set[str] = set()
+        self.entities: list[EntityShape] = []
+        self.active_entity_id = ""
+        self.candidates: list[SplitCandidate] = []
+        self.preview_index = -1
+        self.hidden_entity_ids: set[str] = set()
         self.viewport: OccViewport
         self._build_ui()
         if initial_path:
             self.open_step(initial_path)
 
     def _build_ui(self) -> None:
-        toolbar = QToolBar("视图")
+        toolbar = QToolBar("工具")
         self.addToolBar(toolbar)
-        open_button = QPushButton("打开 STEP")
-        open_button.clicked.connect(self._choose_step)
-        toolbar.addWidget(open_button)
-        for title, direction in [("等轴", (1, -1, 1)), ("顶", (0, 0, 1)), ("前", (0, 1, 0))]:
-            button = QPushButton(title)
+        for label, callback in (
+            ("打开 STEP", self._choose_step),
+            ("保存", self.save),
+            ("导出实体", self.export),
+            ("撤销切分", self.undo),
+            ("重置", self.reset),
+            ("实体类别", self.edit_taxonomy),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            toolbar.addWidget(button)
+        for label, direction in (("等轴", (1, -1, 1)), ("顶", (0, 0, 1)), ("前", (0, 1, 0))):
+            button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, item=direction: self.viewport.set_view(item))
             toolbar.addWidget(button)
         fit_button = QPushButton("适配")
@@ -145,15 +151,6 @@ class MainWindow(QMainWindow):
         wire_button.setCheckable(True)
         wire_button.toggled.connect(lambda enabled: self.viewport.toggle_wireframe(enabled))
         toolbar.addWidget(wire_button)
-        save_button = QPushButton("保存")
-        save_button.clicked.connect(self.save)
-        toolbar.addWidget(save_button)
-        export_button = QPushButton("导出 AAGNet")
-        export_button.clicked.connect(self.export)
-        toolbar.addWidget(export_button)
-        taxonomy_button = QPushButton("标签体系")
-        taxonomy_button.clicked.connect(self.edit_taxonomy)
-        toolbar.addWidget(taxonomy_button)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._make_left_panel())
@@ -161,64 +158,52 @@ class MainWindow(QMainWindow):
         self.viewport.face_picked.connect(self._face_picked)
         splitter.addWidget(self.viewport)
         splitter.addWidget(self._make_right_panel())
-        splitter.setSizes([260, 850, 360])
+        splitter.setSizes([300, 850, 350])
         self.setCentralWidget(splitter)
-        self.status_label = QLabel("打开 STEP 文件开始标注")
+        self.status_label = QLabel("打开 STEP 文件开始实体分割")
         self.statusBar().addWidget(self.status_label)
 
     def _make_left_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("模型 / Solid"))
-        self.body_tree = QTreeWidget()
-        self.body_tree.setHeaderLabels(["名称", "面数"])
-        self.body_tree.itemClicked.connect(self._body_selected)
-        layout.addWidget(self.body_tree)
-        layout.addWidget(QLabel("标注实例"))
-        self.instance_tree = QTreeWidget()
-        self.instance_tree.setHeaderLabels(["实例", "类别", "面数"])
-        self.instance_tree.itemClicked.connect(self._instance_selected)
-        layout.addWidget(self.instance_tree)
+        layout.addWidget(QLabel("闭合实体"))
+        self.entity_tree = QTreeWidget()
+        self.entity_tree.setHeaderLabels(["显示", "实体", "类别", "体积"])
+        self.entity_tree.itemClicked.connect(self._entity_selected)
+        self.entity_tree.itemChanged.connect(self._visibility_changed)
+        layout.addWidget(self.entity_tree)
         return panel
 
     def _make_right_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("当前选择"))
-        self.selection_label = QLabel("未选择面")
+        self.selection_label = QLabel("点击实体表面以搜索平面切分候选")
         self.selection_label.setWordWrap(True)
         layout.addWidget(self.selection_label)
         self.candidate_combo = QComboBox()
-        self.candidate_combo.addItems([CANDIDATE_LABELS[key] for key in CANDIDATE_LABELS])
-        self.candidate_combo.currentIndexChanged.connect(self._refresh_candidate)
-        form = QFormLayout()
-        form.addRow("规则候选", self.candidate_combo)
-        self.class_combo = QComboBox()
-        form.addRow("类别", self.class_combo)
-        layout.addLayout(form)
+        self.candidate_combo.currentIndexChanged.connect(self._preview_candidate)
+        layout.addWidget(self.candidate_combo)
         row = QHBoxLayout()
-        clear_button = QPushButton("清空选择")
-        clear_button.clicked.connect(self._clear_selection)
-        row.addWidget(clear_button)
-        background_button = QPushButton("归为背景")
-        background_button.clicked.connect(self._mark_background)
-        row.addWidget(background_button)
+        confirm = QPushButton("确认切分")
+        confirm.clicked.connect(self.confirm_split)
+        row.addWidget(confirm)
+        cancel = QPushButton("取消预览")
+        cancel.clicked.connect(self.cancel_preview)
+        row.addWidget(cancel)
         layout.addLayout(row)
-        new_button = QPushButton("新建实例并赋值")
-        new_button.clicked.connect(self._create_instance)
-        layout.addWidget(new_button)
-        update_button = QPushButton("更新已选实例")
-        update_button.clicked.connect(self._update_instance)
-        layout.addWidget(update_button)
-        bottom_button = QPushButton("切换底面标记")
-        bottom_button.clicked.connect(self._toggle_bottom)
-        layout.addWidget(bottom_button)
-        delete_button = QPushButton("删除已选实例")
-        delete_button.clicked.connect(self._delete_instance)
-        layout.addWidget(delete_button)
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        layout.addWidget(divider)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.class_combo = QComboBox()
+        self.note_edit = QLineEdit()
+        form.addRow("实体名称", self.name_edit)
+        form.addRow("可选类别", self.class_combo)
+        form.addRow("备注", self.note_edit)
+        layout.addLayout(form)
+        apply_metadata = QPushButton("更新实体信息")
+        apply_metadata.clicked.connect(self.update_entity_metadata)
+        layout.addWidget(apply_metadata)
+
         self.annotator_edit = QLineEdit()
         self.reviewer_edit = QLineEdit()
         self.status_combo = QComboBox()
@@ -239,239 +224,223 @@ class MainWindow(QMainWindow):
 
     def open_step(self, path: Path) -> None:
         try:
-            bodies = load_step(path)
+            initial_entities = load_step(path)
+            annotation = annotation_path_for(path)
+            if annotation.exists():
+                document = load_document(annotation)
+                if not source_matches(path, document):
+                    raise ValueError("源 STEP 哈希与标注不一致")
+                if document.ocp_version != OCP.__version__:
+                    raise ValueError("OpenCascade 版本与标注创建时不一致，无法安全重放")
+                entities = replay_document(path, document)
+            else:
+                entities = initial_entities
+                document = new_document(path, entities)
         except Exception as error:
             QMessageBox.critical(self, "导入失败", str(error))
             return
         self.step_path = path
-        self.bodies = bodies
-        candidate_path = annotation_path_for(path)
-        if candidate_path.exists():
-            document = load_document(candidate_path)
-            if not source_matches(path, document):
-                QMessageBox.warning(self, "源文件已变化", "已有标注的源文件哈希不匹配，将创建新标注。")
-                document = new_document(path, bodies)
-        else:
-            document = new_document(path, bodies)
-            self._add_background_instances(document)
         self.document = document
-        self.active_body_id = bodies[0].id
+        self.entities = entities
+        self.active_entity_id = entities[0].id
         self.annotator_edit.setText(document.annotator)
         self.reviewer_edit.setText(document.reviewer)
+        self.status_combo.blockSignals(True)
         self.status_combo.setCurrentText(document.status)
-        self.viewport.display_bodies(bodies)
-        self._refresh_panels()
-        self._redraw_colors()
-        self.status_label.setText(f"已载入 {path.name}：{len(bodies)} 个 solid")
+        self.status_combo.blockSignals(False)
+        self._clear_candidates()
+        self._refresh_ui(fit=True)
+        self.status_label.setText(f"已载入 {path.name}：{len(entities)} 个闭合实体")
 
-    @staticmethod
-    def _add_background_instances(document: AnnotationDocument) -> None:
-        for body in document.bodies:
-            document.instances.append(
-                FeatureInstance(f"background_{body.id}", 0, body.id, list(body.face_ids))
-            )
+    def _entity_colors(self) -> dict[str, str]:
+        if not self.document:
+            return {}
+        return {item.id: item.color for item in self.document.entities}
 
-    def _refresh_panels(self) -> None:
+    def _refresh_ui(self, fit: bool = False) -> None:
         if not self.document:
             return
-        self.body_tree.clear()
-        for body in self.document.bodies:
-            item = QTreeWidgetItem([body.name, str(len(body.face_ids))])
-            item.setData(0, Qt.UserRole, body.id)
-            self.body_tree.addTopLevelItem(item)
-        self.instance_tree.clear()
-        for instance in self.document.instances:
-            category = self.document.class_by_id(instance.class_id)
-            item = QTreeWidgetItem([instance.id, category.name_zh, str(len(instance.face_ids))])
-            item.setData(0, Qt.UserRole, instance.id)
-            self.instance_tree.addTopLevelItem(item)
-        self.class_combo.blockSignals(True)
-        current_id = self.class_combo.currentData()
+        self.entity_tree.blockSignals(True)
+        self.entity_tree.clear()
+        for record in self.document.entities:
+            category = self.document.class_by_id(record.class_id)
+            item = QTreeWidgetItem(
+                ["", record.name or record.id, category.name_zh if category else "未分类", f"{record.signature.volume:.6g}"]
+            )
+            item.setData(0, Qt.UserRole, record.id)
+            item.setCheckState(
+                0, Qt.Unchecked if record.id in self.hidden_entity_ids else Qt.Checked
+            )
+            self.entity_tree.addTopLevelItem(item)
+            if record.id == self.active_entity_id:
+                self.entity_tree.setCurrentItem(item)
+        self.entity_tree.blockSignals(False)
+        self._refresh_class_combo()
+        self._load_active_metadata()
+        self.viewport.display_entities(
+            self.entities, self._entity_colors(), self.active_entity_id or None, fit=fit
+        )
+
+    def _refresh_class_combo(self) -> None:
+        if not self.document:
+            return
+        current = self.class_combo.currentData()
         self.class_combo.clear()
+        self.class_combo.addItem("未分类", None)
         for item in self.document.taxonomy:
             if item.enabled:
                 self.class_combo.addItem(item.name_zh, item.id)
-        if current_id is not None:
-            index = self.class_combo.findData(current_id)
-            if index >= 0:
-                self.class_combo.setCurrentIndex(index)
-        self.class_combo.blockSignals(False)
-        self._update_selection_label()
+        index = self.class_combo.findData(current)
+        self.class_combo.setCurrentIndex(max(index, 0))
 
-    def _body_selected(self, item: QTreeWidgetItem) -> None:
-        self.active_body_id = item.data(0, Qt.UserRole)
-        self._clear_selection()
+    def _active_record(self):
+        if not self.document or not self.active_entity_id:
+            return None
+        return next((item for item in self.document.entities if item.id == self.active_entity_id), None)
 
-    def _instance_selected(self, item: QTreeWidgetItem) -> None:
-        instance = self._selected_instance()
-        if instance:
-            self.active_body_id = instance.body_id
-            self.working_faces = set(instance.face_ids)
-            self._redraw_colors()
-            self._update_selection_label()
+    def _active_shape(self):
+        return next((item for item in self.entities if item.id == self.active_entity_id), None)
 
-    def _face_picked(self, body_id: str, face_id: str) -> None:
-        if body_id != self.active_body_id:
-            self.active_body_id = body_id
-            self.working_faces.clear()
-        modifiers = QApplication.keyboardModifiers()
-        if modifiers & Qt.ControlModifier:
-            self.working_faces.discard(face_id)
-        elif modifiers & Qt.ShiftModifier:
-            self.working_faces.add(face_id)
+    def _load_active_metadata(self) -> None:
+        record = self._active_record()
+        if not record:
+            return
+        self.name_edit.setText(record.name)
+        self.note_edit.setText(record.note)
+        index = self.class_combo.findData(record.class_id)
+        self.class_combo.setCurrentIndex(max(index, 0))
+
+    def _entity_selected(self, item: QTreeWidgetItem) -> None:
+        self.cancel_preview()
+        self.active_entity_id = item.data(0, Qt.UserRole)
+        self._load_active_metadata()
+        self.viewport.display_entities(self.entities, self._entity_colors(), self.active_entity_id)
+
+    def _visibility_changed(self, item: QTreeWidgetItem) -> None:
+        entity_id = item.data(0, Qt.UserRole)
+        visible = item.checkState(0) == Qt.Checked
+        if visible:
+            self.hidden_entity_ids.discard(entity_id)
         else:
-            self._set_candidate(face_id)
-        self._redraw_colors()
-        self._update_selection_label()
+            self.hidden_entity_ids.add(entity_id)
+        self.viewport.set_entity_visible(entity_id, visible)
 
-    def _candidate_key(self) -> str:
-        return list(CANDIDATE_LABELS)[self.candidate_combo.currentIndex()]
-
-    def _active_body(self) -> ImportedBody | None:
-        return next((body for body in self.bodies if body.id == self.active_body_id), None)
-
-    def _set_candidate(self, seed_face_id: str) -> None:
-        body = self._active_body()
-        if body:
-            self.working_faces = body.candidate(self._candidate_key(), seed_face_id)
-
-    def _refresh_candidate(self) -> None:
-        if self.working_faces:
-            self._set_candidate(next(iter(self.working_faces)))
-            self._redraw_colors()
-            self._update_selection_label()
-
-    def _clear_selection(self) -> None:
-        self.working_faces.clear()
-        self._redraw_colors()
-        self._update_selection_label()
-
-    def _update_selection_label(self) -> None:
-        self.selection_label.setText(f"{len(self.working_faces)} 个面，solid：{self.active_body_id or '-'}")
-
-    def _selected_instance(self) -> FeatureInstance | None:
-        if not self.document:
-            return None
-        item = self.instance_tree.currentItem()
-        if not item:
-            return None
-        instance_id = item.data(0, Qt.UserRole)
-        return next((entry for entry in self.document.instances if entry.id == instance_id), None)
-
-    def _remove_faces_from_other_instances(
-        self, face_ids: set[str], body_id: str, preserve_id: str | None = None
-    ) -> None:
-        assert self.document
-        survivors: list[FeatureInstance] = []
-        for instance in self.document.instances:
-            if instance.id == preserve_id:
-                survivors.append(instance)
-                continue
-            if instance.body_id != body_id:
-                survivors.append(instance)
-                continue
-            instance.face_ids = [face_id for face_id in instance.face_ids if face_id not in face_ids]
-            instance.bottom_face_ids = [face_id for face_id in instance.bottom_face_ids if face_id in instance.face_ids]
-            if instance.face_ids:
-                survivors.append(instance)
-        self.document.instances = survivors
-
-    def _create_instance(self) -> None:
-        if not self.document or not self.working_faces:
+    def _face_picked(self, entity_id: str, face_id: str) -> None:
+        self.active_entity_id = entity_id
+        entity = self._active_shape()
+        if entity is None:
             return
-        self._remove_faces_from_other_instances(self.working_faces, self.active_body_id)
-        numbers = [
-            int(item.id.removeprefix("feature_"))
-            for item in self.document.instances
-            if item.id.startswith("feature_") and item.id.removeprefix("feature_").isdigit()
-        ]
-        count = max(numbers, default=0) + 1
-        instance = FeatureInstance(
-            id=f"feature_{count:04d}",
-            class_id=int(self.class_combo.currentData()),
-            body_id=self.active_body_id,
-            face_ids=sorted(self.working_faces),
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.candidates = planar_split_candidates(entity, face_id)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.candidate_combo.blockSignals(True)
+        self.candidate_combo.clear()
+        for index, candidate in enumerate(self.candidates, start=1):
+            volumes = ", ".join(f"{item.volume:.4g}" for item in candidate.result_signatures)
+            self.candidate_combo.addItem(
+                f"候选 {index}：{len(candidate.result_shapes)} 个实体；体积 {volumes}"
+            )
+        self.candidate_combo.blockSignals(False)
+        if not self.candidates:
+            self.preview_index = -1
+            self.selection_label.setText("未发现能产生多个闭合实体的平面")
+            self.viewport.display_entities(self.entities, self._entity_colors(), entity_id)
+            return
+        self.selection_label.setText(f"{entity_id}：发现 {len(self.candidates)} 个候选切平面")
+        self.candidate_combo.setCurrentIndex(0)
+        self._preview_candidate(0)
+
+    def _preview_candidate(self, index: int) -> None:
+        if index < 0 or index >= len(self.candidates) or not self.active_entity_id:
+            return
+        self.preview_index = index
+        candidate = self.candidates[index]
+        normal = ", ".join(f"{item:.4g}" for item in candidate.plane.normal)
+        self.selection_label.setText(
+            f"预览 {index + 1}：平面 n=({normal}), d={candidate.plane.offset:.6g}"
         )
-        self.document.instances.append(instance)
-        self._changed()
-
-    def _update_instance(self) -> None:
-        instance = self._selected_instance()
-        if not instance or not self.working_faces or instance.body_id != self.active_body_id:
-            return
-        self._remove_faces_from_other_instances(
-            self.working_faces, self.active_body_id, preserve_id=instance.id
+        self.viewport.display_preview(
+            self.entities, self.active_entity_id, candidate.result_shapes, self._entity_colors()
         )
-        instance.face_ids = sorted(self.working_faces)
-        instance.bottom_face_ids = [face_id for face_id in instance.bottom_face_ids if face_id in self.working_faces]
-        self._changed()
 
-    def _mark_background(self) -> None:
-        if not self.document or not self.working_faces:
+    def _clear_candidates(self) -> None:
+        self.candidates = []
+        self.preview_index = -1
+        self.candidate_combo.blockSignals(True)
+        self.candidate_combo.clear()
+        self.candidate_combo.blockSignals(False)
+
+    def cancel_preview(self) -> None:
+        self._clear_candidates()
+        if self.document:
+            self.selection_label.setText("点击实体表面以搜索平面切分候选")
+            self.viewport.display_entities(
+                self.entities, self._entity_colors(), self.active_entity_id or None
+            )
+
+    def confirm_split(self) -> None:
+        if not self.document or self.preview_index < 0:
             return
-        self._remove_faces_from_other_instances(self.working_faces, self.active_body_id)
-        background = next(
-            (item for item in self.document.instances if item.id == f"background_{self.active_body_id}"),
-            None,
-        )
-        if background is None:
-            background = FeatureInstance(f"background_{self.active_body_id}", 0, self.active_body_id, [])
-            self.document.instances.append(background)
-        background.face_ids = sorted(set(background.face_ids) | self.working_faces)
-        self._changed()
-
-    def _toggle_bottom(self) -> None:
-        instance = self._selected_instance()
-        if not instance or instance.body_id != self.active_body_id:
+        candidate = self.candidates[self.preview_index]
+        try:
+            self.entities = apply_split(
+                self.document, self.entities, self.active_entity_id, candidate.plane
+            )
+        except Exception as error:
+            QMessageBox.warning(self, "切分失败", str(error))
             return
-        selected = set(instance.bottom_face_ids)
-        for face_id in self.working_faces & set(instance.face_ids):
-            if face_id in selected:
-                selected.remove(face_id)
-            else:
-                selected.add(face_id)
-        instance.bottom_face_ids = sorted(selected)
-        self._changed()
+        self.active_entity_id = self.document.split_operations[-1].result_entity_ids[0]
+        self.hidden_entity_ids.intersection_update(item.id for item in self.entities)
+        self._clear_candidates()
+        self._refresh_ui()
+        self.save(silent=True)
+        self.status_label.setText(f"切分完成：当前 {len(self.entities)} 个闭合实体")
 
-    def _delete_instance(self) -> None:
-        instance = self._selected_instance()
-        if not self.document or not instance or instance.class_id == 0:
+    def undo(self) -> None:
+        if not self.document or not self.step_path or not self.document.split_operations:
             return
-        faces = set(instance.face_ids)
-        self.document.instances.remove(instance)
-        self.working_faces = faces
-        self._mark_background()
-
-    def _status_changed(self, status: str) -> None:
-        if not self.document:
+        try:
+            undo_last_split(self.document)
+            self.entities = replay_document(self.step_path, self.document)
+        except Exception as error:
+            QMessageBox.warning(self, "撤销失败", str(error))
             return
-        if status in {"completed", "reviewed"}:
-            errors = self.document.validate(require_complete=True)
-            if errors:
-                QMessageBox.warning(self, "无法完成", "\n".join(errors))
-                self.status_combo.blockSignals(True)
-                self.status_combo.setCurrentText("draft")
-                self.status_combo.blockSignals(False)
-                return
-        self.document.status = status
-        self._changed()
-
-    def _changed(self) -> None:
-        self._refresh_panels()
-        self._redraw_colors()
+        self.active_entity_id = self.entities[0].id
+        self.hidden_entity_ids.intersection_update(item.id for item in self.entities)
+        self._clear_candidates()
+        self._refresh_ui()
         self.save(silent=True)
 
-    def _redraw_colors(self) -> None:
-        if not self.document:
+    def reset(self) -> None:
+        if not self.step_path or not self.document:
             return
-        colors = {face_id: "#8B8B8B" for body in self.document.bodies for face_id in body.face_ids}
-        for instance in self.document.instances:
-            color = self.document.class_by_id(instance.class_id).color
-            for face_id in instance.face_ids:
-                colors[face_id] = color
-        for face_id in self.working_faces:
-            colors[face_id] = "#FACC15"
-        self.viewport.set_face_colors(colors)
+        if QMessageBox.question(self, "重置", "清除所有切分和实体信息？") != QMessageBox.Yes:
+            return
+        self.entities = load_step(self.step_path)
+        self.document = new_document(self.step_path, self.entities)
+        self.active_entity_id = self.entities[0].id
+        self.hidden_entity_ids.clear()
+        self._clear_candidates()
+        self._refresh_ui()
+        self.save(silent=True)
+
+    def update_entity_metadata(self) -> None:
+        record = self._active_record()
+        if not record or not self.document:
+            return
+        record.name = self.name_edit.text().strip() or record.id
+        record.note = self.note_edit.text().strip()
+        record.class_id = self.class_combo.currentData()
+        category = self.document.class_by_id(record.class_id)
+        if category:
+            record.color = category.color
+        else:
+            number = int(record.id.removeprefix("entity_"))
+            record.color = ENTITY_COLORS[(number - 1) % len(ENTITY_COLORS)]
+        self._refresh_ui()
+        self.save(silent=True)
 
     def edit_taxonomy(self) -> None:
         if not self.document:
@@ -482,9 +451,15 @@ class MainWindow(QMainWindow):
         try:
             self.document.taxonomy = dialog.values()
         except ValueError as error:
-            QMessageBox.warning(self, "标签体系无效", str(error))
+            QMessageBox.warning(self, "类别无效", str(error))
             return
-        self._changed()
+        self._refresh_ui()
+        self.save(silent=True)
+
+    def _status_changed(self, status: str) -> None:
+        if self.document:
+            self.document.status = status
+            self.save(silent=True)
 
     def save(self, silent: bool = False) -> None:
         if not self.document or not self.step_path:
@@ -492,23 +467,25 @@ class MainWindow(QMainWindow):
         self.document.annotator = self.annotator_edit.text().strip()
         self.document.reviewer = self.reviewer_edit.text().strip()
         errors = self.document.validate()
-        if errors and not silent:
-            QMessageBox.warning(self, "保存了草稿，但发现问题", "\n".join(errors))
+        if errors:
+            if not silent:
+                QMessageBox.warning(self, "无法保存", "\n".join(errors))
+            return
         save_document(annotation_path_for(self.step_path), self.document)
-        self.status_label.setText("已自动保存" if silent else "已保存标注")
+        self.status_label.setText("已自动保存" if silent else "已保存")
 
     def export(self) -> None:
-        if not self.document or not self.step_path:
+        if not self.document:
             return
-        directory = QFileDialog.getExistingDirectory(self, "选择导出目录")
+        directory = QFileDialog.getExistingDirectory(self, "选择实体导出目录")
         if not directory:
             return
         try:
-            paths = export_aagnet(self.document, Path(directory))
+            paths = export_solids(self.document, self.entities, Path(directory))
         except Exception as error:
             QMessageBox.warning(self, "导出失败", str(error))
             return
-        self.status_label.setText(f"已导出 {len(paths)} 个 body 标签")
+        self.status_label.setText(f"已导出 {len(paths)} 个文件")
 
 
 def main() -> None:
@@ -516,4 +493,7 @@ def main() -> None:
     initial = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     window = MainWindow(initial)
     window.show()
+    smoke_delay = os.environ.get("STEPSEG_GUI_SMOKE_MS")
+    if smoke_delay:
+        QTimer.singleShot(max(int(smoke_delay), 1), app.quit)
     sys.exit(app.exec_())

@@ -2,58 +2,37 @@ from pathlib import Path
 
 import pytest
 
-from stepseg.export import export_aagnet
-from stepseg.models import AnnotationDocument, BodyRecord, FeatureInstance
+from stepseg.models import AnnotationDocument, EntityRecord, GeometrySignature
 from stepseg.storage import load_document, save_document
 
 
+def signature(volume: float = 1.0) -> GeometrySignature:
+    return GeometrySignature(volume, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0, 1.0, 1.0))
+
+
 def document() -> AnnotationDocument:
-    return AnnotationDocument(
-        source_path="sample.step",
-        source_sha256="abc",
-        ocp_version="test",
-        bodies=[BodyRecord("solid_0001", "solid_0001", ["solid_0001/face_00001", "solid_0001/face_00002"])],
-        instances=[
-            FeatureInstance("background_solid_0001", 0, "solid_0001", ["solid_0001/face_00002"]),
-            FeatureInstance(
-                "feature_0001",
-                5,
-                "solid_0001",
-                ["solid_0001/face_00001"],
-                ["solid_0001/face_00001"],
-            ),
-        ],
-    )
+    entity = EntityRecord("entity_0001", "solid_0001", signature(), name="entity_0001")
+    return AnnotationDocument("sample.step", "abc", "test", [entity], [entity])
 
 
-def test_complete_document_is_valid() -> None:
-    assert document().validate(require_complete=True) == []
+def test_new_document_is_valid() -> None:
+    assert document().validate() == []
 
 
-def test_duplicate_face_is_invalid() -> None:
+def test_unknown_optional_class_is_invalid() -> None:
     value = document()
-    value.instances[0].face_ids.append("solid_0001/face_00001")
-    assert any("assigned by both" in error for error in value.validate())
+    value.entities[0].class_id = 999
+    assert any("unknown class" in error for error in value.validate())
 
 
-def test_bottom_face_must_be_in_instance() -> None:
-    value = document()
-    value.instances[1].bottom_face_ids = ["solid_0001/face_00002"]
-    assert any("bottom faces" in error for error in value.validate())
-
-
-def test_save_reload_and_export(tmp_path: Path) -> None:
-    value = document()
-    annotation = tmp_path / "sample.stepanno.json"
-    save_document(annotation, value)
+def test_save_and_reload_v2_document(tmp_path: Path) -> None:
+    annotation = tmp_path / "sample.stepseg.json"
+    save_document(annotation, document())
     restored = load_document(annotation)
-    output = export_aagnet(restored, tmp_path / "export")
-    assert len(output) == 1
-    assert (tmp_path / "export" / "source_map.json").exists()
+    assert restored.schema_version == "2.0"
+    assert restored.entities[0].id == "entity_0001"
 
 
-def test_export_requires_complete_document(tmp_path: Path) -> None:
-    value = document()
-    value.instances.pop()
-    with pytest.raises(ValueError, match="unassigned"):
-        export_aagnet(value, tmp_path)
+def test_v1_schema_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unsupported annotation schema"):
+        AnnotationDocument.from_dict({"schema_version": "1.0"})
