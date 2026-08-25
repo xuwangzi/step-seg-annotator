@@ -127,6 +127,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         menu_bar = self.menuBar()
+        menu_bar.setNativeMenuBar(False)
         file_menu = menu_bar.addMenu("文件")
         file_menu.addAction("打开 STEP", self._choose_step)
         file_menu.addSeparator()

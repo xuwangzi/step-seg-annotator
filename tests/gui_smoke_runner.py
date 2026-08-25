@@ -44,6 +44,7 @@ def main() -> None:
 
         app = QApplication([])
         window = MainWindow()
+        assert not window.menuBar().isNativeMenuBar()
         assert [action.text() for action in window.menuBar().actions()] == [
             "文件",
             "编辑",
