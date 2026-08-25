@@ -100,7 +100,7 @@ class OccViewport(QWidget):
     def clear(self) -> None:
         self._context.RemoveAll(False)
         self._ais_by_id.clear()
-        self._entities.clear()
+        self._entities = []
 
     def display_entities(
         self,
@@ -110,7 +110,7 @@ class OccViewport(QWidget):
         fit: bool = False,
     ) -> None:
         self.clear()
-        self._entities = entities
+        self._entities = list(entities)
         for entity in entities:
             color = "#FACC15" if entity.id == selected_id else colors.get(entity.id, "#71717A")
             self._display_shape(entity.id, entity.shape, color, True)

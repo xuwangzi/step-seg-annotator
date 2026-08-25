@@ -10,12 +10,11 @@ import pytest
 def test_macos_native_viewport_starts() -> None:
     project_root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
-    environment["STEPSEG_GUI_SMOKE_MS"] = "1000"
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(project_root / "src"), environment.get("PYTHONPATH", "")]
     )
     result = subprocess.run(
-        [sys.executable, "-c", "from stepseg.launcher import main; main()"],
+        [sys.executable, str(project_root / "tests" / "gui_smoke_runner.py")],
         cwd=project_root,
         env=environment,
         capture_output=True,
