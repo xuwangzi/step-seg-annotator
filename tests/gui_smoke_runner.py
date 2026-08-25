@@ -44,6 +44,12 @@ def main() -> None:
 
         app = QApplication([])
         window = MainWindow()
+        assert [action.text() for action in window.menuBar().actions()] == [
+            "文件",
+            "编辑",
+            "标注",
+            "视图",
+        ]
         window.step_path = source_path
         window.entities = [entity]
         window.document = new_document(source_path, window.entities)

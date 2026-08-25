@@ -24,7 +24,6 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -127,30 +126,30 @@ class MainWindow(QMainWindow):
             self.open_step(initial_path)
 
     def _build_ui(self) -> None:
-        toolbar = QToolBar("工具")
-        self.addToolBar(toolbar)
-        for label, callback in (
-            ("打开 STEP", self._choose_step),
-            ("保存", self.save),
-            ("导出实体", self.export),
-            ("撤销切分", self.undo),
-            ("重置", self.reset),
-            ("实体类别", self.edit_taxonomy),
-        ):
-            button = QPushButton(label)
-            button.clicked.connect(callback)
-            toolbar.addWidget(button)
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("文件")
+        file_menu.addAction("打开 STEP", self._choose_step)
+        file_menu.addSeparator()
+        file_menu.addAction("保存", self.save)
+        file_menu.addAction("导出实体", self.export)
+
+        edit_menu = menu_bar.addMenu("编辑")
+        edit_menu.addAction("撤销切分", self.undo)
+        edit_menu.addAction("重置", self.reset)
+
+        annotation_menu = menu_bar.addMenu("标注")
+        annotation_menu.addAction("实体类别", self.edit_taxonomy)
+
+        view_menu = menu_bar.addMenu("视图")
         for label, direction in (("等轴", (1, -1, 1)), ("顶", (0, 0, 1)), ("前", (0, 1, 0))):
-            button = QPushButton(label)
-            button.clicked.connect(lambda _checked=False, item=direction: self.viewport.set_view(item))
-            toolbar.addWidget(button)
-        fit_button = QPushButton("适配")
-        fit_button.clicked.connect(lambda: self.viewport.fit_all())
-        toolbar.addWidget(fit_button)
-        wire_button = QPushButton("线框")
-        wire_button.setCheckable(True)
-        wire_button.toggled.connect(lambda enabled: self.viewport.toggle_wireframe(enabled))
-        toolbar.addWidget(wire_button)
+            view_menu.addAction(
+                label, lambda _checked=False, item=direction: self.viewport.set_view(item)
+            )
+        view_menu.addSeparator()
+        view_menu.addAction("适配", lambda: self.viewport.fit_all())
+        wire_action = view_menu.addAction("线框")
+        wire_action.setCheckable(True)
+        wire_action.toggled.connect(lambda enabled: self.viewport.toggle_wireframe(enabled))
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._make_left_panel())
