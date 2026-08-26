@@ -16,6 +16,18 @@
 
 ## 安装与运行
 
+支持以下运行环境：
+
+- Windows x64；
+- macOS Intel 或 Apple Silicon，macOS 11 及以上；
+- Linux x86_64，glibc 2.31 及以上。
+
+Linux 图形界面需要 X11 或 XWayland，以及可用的 OpenGL 运行时。Wayland 桌面请确保已安装并启用 XWayland。Windows 和 macOS 使用系统原生桌面窗口。
+
+项目在 Windows 上使用 Qt 5.15.2，在 macOS 和 Linux 上使用 Qt 5.15.19；这些平台条件已经记录在项目依赖和锁文件中，不需要手动安装 Qt。
+
+安装 `uv` 和 Python 3.12 后，在项目目录执行：
+
 ```bash
 uv sync --locked --dev --no-editable
 uv run --no-sync stepseg-annotator

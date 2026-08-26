@@ -6,12 +6,59 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            machine: amd64
+          - os: macos-13
+            machine: x86_64
+          - os: macos-14
+            machine: arm64
+          - os: ubuntu-22.04
+            machine: x86_64
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.12.5"
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1 \
+            libgl1-mesa-dri \
+            libx11-xcb1 \
+            libxcb-cursor0 \
+            libxcb-glx0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libxext6 \
+            libxi6 \
+            libxkbcommon-x11-0 \
+            libxrender1 \
+            xauth \
+            xvfb
+      - name: Verify runner architecture
+        run: python -c "import platform; actual = platform.machine().lower(); expected = '${{ matrix.machine }}'; assert actual == expected, f'{actual} != {expected}'"
       - run: uv sync --locked --dev --no-editable
-      - run: uv run --no-sync pytest -q
+      - name: Run tests on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" env LIBGL_ALWAYS_SOFTWARE=1 QT_QPA_PLATFORM=xcb uv run --no-sync pytest -q
+      - name: Run tests on native desktop
+        if: runner.os != 'Linux'
+        run: uv run --no-sync pytest -q
       - run: uv run --no-sync ruff check .

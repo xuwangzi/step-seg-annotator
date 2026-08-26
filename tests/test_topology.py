@@ -85,6 +85,13 @@ def test_split_plane_is_positioned_near_far_from_origin_model() -> None:
     assert len(parts) == 2
 
 
+def test_geometry_signature_excludes_shape_tolerance() -> None:
+    shape = BRepPrimAPI_MakeBox(10, 20, 30).Shape()
+    assert geometry_signature(shape).bbox == pytest.approx(
+        (0, 0, 0, 10, 20, 30), rel=0, abs=1e-12
+    )
+
+
 def test_two_splits_create_five_independent_entities(tmp_path: Path) -> None:
     source = tmp_path / "synthetic.step"
     source.write_bytes(b"synthetic")
@@ -137,5 +144,31 @@ def test_replay_rejects_changed_geometry_signature(tmp_path: Path) -> None:
     apply_split(document, entities, entities[0].id, PlaneSpec((0.0, 0.0, 1.0), 5.0))
     signature = document.split_operations[0].result_signatures[0]
     signature.centroid = (signature.centroid[0] + 1.0, *signature.centroid[1:])
+    with pytest.raises(ValueError, match="geometry signature changed"):
+        replay_document(source, document)
+
+
+def test_replay_accepts_legacy_bbox_tolerance_padding(tmp_path: Path) -> None:
+    source = tmp_path / "two_stage.step"
+    write_step(two_stage_cylinder(), source)
+    entities = load_step(source)
+    document = new_document(source, entities)
+    apply_split(document, entities, entities[0].id, PlaneSpec((0.0, 0.0, 1.0), 5.0))
+    signature = document.split_operations[0].result_signatures[0]
+    signature.bbox = tuple(
+        value + (-0.01 if index < 3 else 0.01)
+        for index, value in enumerate(signature.bbox)
+    )
+    assert len(replay_document(source, document)) == 2
+
+
+def test_replay_rejects_nonuniform_bbox_change(tmp_path: Path) -> None:
+    source = tmp_path / "two_stage.step"
+    write_step(two_stage_cylinder(), source)
+    entities = load_step(source)
+    document = new_document(source, entities)
+    apply_split(document, entities, entities[0].id, PlaneSpec((0.0, 0.0, 1.0), 5.0))
+    signature = document.split_operations[0].result_signatures[0]
+    signature.bbox = (*signature.bbox[:3], signature.bbox[3] + 1.0, *signature.bbox[4:])
     with pytest.raises(ValueError, match="geometry signature changed"):
         replay_document(source, document)

@@ -3,11 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS native window test")
-def test_macos_native_viewport_starts() -> None:
+def test_native_viewport_starts() -> None:
     project_root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(

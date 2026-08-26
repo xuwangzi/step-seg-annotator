@@ -1,4 +1,4 @@
-"""Native GUI smoke runner executed in an isolated macOS subprocess."""
+"""Native GUI smoke runner executed in an isolated subprocess."""
 
 from __future__ import annotations
 
@@ -37,10 +37,9 @@ def main() -> None:
         if planar_split_candidates(entity, face_id)
     )
 
-    with tempfile.NamedTemporaryFile(suffix=".step") as source:
-        source.write(b"gui smoke source")
-        source.flush()
-        source_path = Path(source.name)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        source_path = Path(temp_dir) / "gui-smoke.step"
+        source_path.write_bytes(b"gui smoke source")
 
         app = QApplication([])
         window = MainWindow()

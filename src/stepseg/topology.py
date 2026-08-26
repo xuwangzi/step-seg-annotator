@@ -72,7 +72,7 @@ def _subshapes(shape: TopoDS_Shape, shape_type: int) -> list[TopoDS_Shape]:
 
 def _bbox(shape: TopoDS_Shape) -> tuple[float, float, float, float, float, float]:
     box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
+    BRepBndLib.AddOptimal_s(shape, box, True, False)
     return tuple(float(value) for value in box.Get())
 
 
@@ -89,6 +89,23 @@ def geometry_signature(shape: TopoDS_Shape) -> GeometrySignature:
 
 def _signature_key(value: GeometrySignature) -> tuple[float, ...]:
     return (*[round(item, 8) for item in value.centroid], round(value.volume, 8), *value.bbox)
+
+
+def _bbox_matches(
+    actual: tuple[float, ...], expected: tuple[float, ...], length_scale: float
+) -> bool:
+    tolerance = VOLUME_TOLERANCE * length_scale
+    if max(abs(value - reference) for value, reference in zip(actual, expected)) <= tolerance:
+        return True
+
+    # Older annotations used BRepBndLib.Add(), which enlarges every bound by
+    # the shape tolerance. Boolean previews can raise that tolerance without
+    # changing the underlying geometry.
+    padding = [
+        *(value - reference for value, reference in zip(actual[:3], expected[:3])),
+        *(reference - value for value, reference in zip(actual[3:], expected[3:])),
+    ]
+    return min(padding) >= -tolerance and max(padding) - min(padding) <= tolerance
 
 
 def _canonical_plane(normal: tuple[float, float, float], offset: float) -> PlaneSpec:
@@ -351,10 +368,10 @@ def replay_document(step_path: Path, document: AnnotationDocument) -> list[Entit
                 abs(value - reference)
                 for value, reference in zip(actual.centroid, expected.centroid)
             ) / length_scale
-            bbox_error = max(
-                abs(value - reference) for value, reference in zip(actual.bbox, expected.bbox)
-            ) / length_scale
-            if max(volume_error, centroid_error, bbox_error) > VOLUME_TOLERANCE:
+            if (
+                max(volume_error, centroid_error) > VOLUME_TOLERANCE
+                or not _bbox_matches(actual.bbox, expected.bbox, length_scale)
+            ):
                 raise ValueError(f"cannot replay {operation.id}: geometry signature changed")
             active[result.id] = result
     if set(active) != {item.id for item in document.entities}:
