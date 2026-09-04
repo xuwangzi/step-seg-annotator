@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from PyQt5.QtCore import Qt
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -11,7 +12,8 @@ from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 import stepseg.face_partition as face_partition
 from stepseg.export import export_faces
-from stepseg.models import FaceGroupRecord
+from stepseg.app import GROUP_COLORS, color_for_group, update_face_selection
+from stepseg.models import FaceAnnotationDocument, FaceGroupRecord, FaceRecord
 from stepseg.storage import load_document, save_document, sha256_file
 from stepseg.topology import build_entity
 
@@ -113,3 +115,21 @@ def test_snapshot_document_round_trip_and_export(tmp_path: Path) -> None:
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert {face["group_id"] for face in manifest["faces"]} == {"group_0001"}
     assert sha256_file(face_partition.resolve_snapshot_path(restored)) == restored.snapshot_sha256
+
+
+def test_face_selection_is_unique_and_supports_add_remove() -> None:
+    assert update_face_selection({"face_1"}, {"face_1"}, 0) == {"face_1"}
+    assert update_face_selection({"face_1"}, {"face_2"}, 0) == {"face_1", "face_2"}
+    assert update_face_selection({"face_1", "face_2"}, {"face_1"}, int(Qt.ControlModifier)) == {"face_2"}
+    assert update_face_selection({"face_1", "face_2"}, set(), 0) == {"face_1", "face_2"}
+    assert update_face_selection({"face_1", "face_2"}, {"face_2"}, int(Qt.ControlModifier)) == {"face_1"}
+
+
+def test_unclassified_groups_get_distinct_stable_colors() -> None:
+    faces = [FaceRecord("face_1", "plane", 1, (0, 0, 0), (0, 0, 0, 1, 1, 1))]
+    document = FaceAnnotationDocument("x", "y", "z", "fused", "snapshot", "hash", faces)
+    first = FaceGroupRecord("group_1", "first")
+    second = FaceGroupRecord("group_2", "second")
+    document.groups = [first, second]
+    assert color_for_group(document, first) == GROUP_COLORS[0]
+    assert color_for_group(document, second) == GROUP_COLORS[1]

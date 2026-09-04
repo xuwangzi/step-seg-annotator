@@ -30,7 +30,7 @@ uv run --no-sync stepseg-annotator /path/to/part.step
 
 1. 打开 STEP，等待融合、seam 检测和面压印完成。
 2. 新建或选择左侧面组。
-3. 单击细面；`Shift` 追加，`Ctrl` 移除。开启“面框选”后可拖框选择中心投影位于框内的面。
+3. 单击细面；普通单击和 `Shift` 追加未选面，`Ctrl` 移除。开启“面框选”后拖动可见的选择框，投影与框相交的可见面都会加入选择集。
 4. 点击“合并到当前组”，然后填写名称、类别和备注。
 5. 所有细面恰好归入一个面组后，状态才可设为 `completed` 或 `reviewed`。
 6. 标注保存到源文件旁的 `.stepseg.json`，派生几何位于 `.stepseg-cache/`。

@@ -26,6 +26,32 @@ from .topology import EntityShape, apply_split, load_step, new_document, planar_
 from .viewer import OccViewport
 
 
+GROUP_COLORS = ["#3B638A", "#3F7D3A", "#579695", "#B86B4B", "#8A5E9E", "#D29F3F", "#4C8A72"]
+
+
+def update_face_selection(current: set[str], incoming: set[str], modifiers: int) -> set[str]:
+    """Apply a unique add/remove selection operation."""
+    selected = set(current)
+    if modifiers & int(Qt.ControlModifier):
+        selected.difference_update(incoming)
+    else:
+        selected.update(incoming)
+    return selected
+
+
+def color_for_group(document: FaceAnnotationDocument, group: FaceGroupRecord) -> str:
+    category = document.class_by_id(group.class_id)
+    used = {item.color for item in document.groups if item.id != group.id}
+    if category and category.color not in used:
+        return category.color
+    index = document.groups.index(group)
+    for offset in range(len(GROUP_COLORS)):
+        candidate = GROUP_COLORS[(index + offset) % len(GROUP_COLORS)]
+        if candidate not in used:
+            return candidate
+    return category.color if category else "#71717A"
+
+
 class TaxonomyDialog(QDialog):
     def __init__(self, taxonomy: list[TaxonomyClass], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -289,8 +315,10 @@ class MainWindow(QMainWindow):
         colors = {face.id: "#8B8B8B" for face in self.document.faces}
         for group in self.document.groups:
             if group.id not in self.hidden_group_ids:
+                group_color = color_for_group(self.document, group)
+                group.color = group_color
                 for face_id in group.face_ids:
-                    colors[face_id] = group.color
+                    colors[face_id] = group_color
         for face_id in self.selected_face_ids:
             colors[face_id] = "#FACC15"
         self.viewport.display_partition(self.partition, colors, fit=fit)
@@ -347,27 +375,27 @@ class MainWindow(QMainWindow):
                     self.candidate_combo.addItem(f"候选 {index}：{len(candidate.result_shapes)} 个实体")
                 self.preview_index = 0 if self.candidates else -1
             return
-        self._remember()
         modifiers = QApplication.keyboardModifiers()
-        if modifiers & Qt.ControlModifier:
-            self.selected_face_ids.discard(face_id)
-        elif modifiers & Qt.ShiftModifier:
-            self.selected_face_ids.add(face_id)
-        else:
-            self.selected_face_ids = {face_id}
+        updated = update_face_selection(self.selected_face_ids, {face_id}, int(modifiers))
+        if updated == self.selected_face_ids:
+            return
+        self._remember()
+        self.selected_face_ids = updated
         self._redraw_faces()
 
     def _faces_box_selected(self, face_ids: list[str]) -> None:
         if not isinstance(self.document, FaceAnnotationDocument):
             return
-        self._remember()
         modifiers = QApplication.keyboardModifiers()
-        if modifiers & Qt.ControlModifier:
-            self.selected_face_ids.difference_update(face_ids)
-        elif modifiers & Qt.ShiftModifier:
-            self.selected_face_ids.update(face_ids)
+        incoming = set(face_ids)
+        if not incoming and not (modifiers & (Qt.ShiftModifier | Qt.ControlModifier)):
+            updated = set()
         else:
-            self.selected_face_ids = set(face_ids)
+            updated = update_face_selection(self.selected_face_ids, incoming, int(modifiers))
+        if updated == self.selected_face_ids:
+            return
+        self._remember()
+        self.selected_face_ids = updated
         self._redraw_faces()
 
     def confirm_split(self) -> None:
@@ -394,6 +422,7 @@ class MainWindow(QMainWindow):
         number = max(numbers, default=0) + 1
         group = FaceGroupRecord(f"group_{number:04d}", f"面组_{number:04d}")
         self.document.groups.append(group)
+        group.color = color_for_group(self.document, group)
         self.active_group_id = group.id
         self._refresh_ui()
         self.save(silent=True)
@@ -408,6 +437,7 @@ class MainWindow(QMainWindow):
             if other.id != group.id:
                 other.face_ids = [face_id for face_id in other.face_ids if face_id not in selected]
         group.face_ids = sorted(set(group.face_ids) | selected)
+        self.selected_face_ids.clear()
         self._refresh_ui()
         self.save(silent=True)
 
@@ -420,7 +450,7 @@ class MainWindow(QMainWindow):
         group.note = self.note_edit.text().strip()
         group.class_id = self.class_combo.currentData()
         category = self.document.class_by_id(group.class_id)
-        group.color = category.color if category else "#71717A"
+        group.color = color_for_group(self.document, group) if not category else category.color
         self._refresh_ui()
         self.save(silent=True)
 

@@ -13,7 +13,7 @@ from OCP.TopAbs import TopAbs_FACE
 from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_Viewer
 from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QRubberBand, QWidget
 
 from .face_partition import FacePartition
 from .topology import ENTITY_COLORS, EntityShape
@@ -39,6 +39,12 @@ class OccViewport(QWidget):
         self._wireframe = False
         self._box_mode = False
         self._box_rect: QRect | None = None
+        self._rubber_band = QRubberBand(QRubberBand.Rectangle, self)
+        self._rubber_band.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._rubber_band.setStyleSheet(
+            "QRubberBand { border: 1px dashed #FACC15; background: rgba(250, 204, 21, 45); }"
+        )
+        self._rubber_band.hide()
         self._connection = Aspect_DisplayConnection()
         self._driver = OpenGl_GraphicDriver(self._connection)
         self._viewer = V3d_Viewer(self._driver)
@@ -79,12 +85,6 @@ class OccViewport(QWidget):
         self._ensure_initialized()
         self._view.MustBeResized()
         self._view.Redraw()
-        if self._box_rect is not None:
-            from PyQt5.QtGui import QPainter, QPen
-
-            painter = QPainter(self)
-            painter.setPen(QPen(Qt.yellow, 1, Qt.DashLine))
-            painter.drawRect(self._box_rect.normalized())
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -113,6 +113,8 @@ class OccViewport(QWidget):
         self._ais_by_id.clear()
         self._entities = []
         self._partition = None
+        self._box_rect = None
+        self._rubber_band.hide()
 
     def display_entities(
         self,
@@ -156,6 +158,7 @@ class OccViewport(QWidget):
     def set_box_mode(self, enabled: bool) -> None:
         self._box_mode = enabled
         self._box_rect = None
+        self._rubber_band.hide()
 
     def display_preview(
         self,
@@ -211,7 +214,8 @@ class OccViewport(QWidget):
         self._last = self._press
         if event.button() == Qt.LeftButton and self._box_mode:
             self._box_rect = QRect(self._press, self._press)
-            self.update()
+            self._rubber_band.setGeometry(self._box_rect)
+            self._rubber_band.show()
         elif event.button() == Qt.LeftButton:
             self._view.StartRotation(self._press.x(), self._press.y())
 
@@ -219,7 +223,7 @@ class OccViewport(QWidget):
         position = event.pos()
         if self._box_mode and self._box_rect is not None and event.buttons() & Qt.LeftButton:
             self._box_rect.setBottomRight(position)
-            self.update()
+            self._rubber_band.setGeometry(self._box_rect.normalized())
         elif event.buttons() & Qt.LeftButton and event.modifiers() == Qt.NoModifier:
             self._view.Rotation(position.x(), position.y())
         elif event.buttons() & Qt.MiddleButton:
@@ -236,15 +240,24 @@ class OccViewport(QWidget):
         if self._box_mode and event.button() == Qt.LeftButton and self._box_rect is not None:
             rect = self._box_rect.normalized()
             self._box_rect = None
-            self.update()
-            if rect.width() >= 4 and rect.height() >= 4:
-                selected = []
-                if self._partition:
-                    for record in self._partition.records:
-                        x, y = self._view.Convert(*record.centroid)
-                        if rect.contains(x, y):
-                            selected.append(record.id)
-                self.faces_box_selected.emit(selected)
+            self._rubber_band.hide()
+            selected: list[str] = []
+            if rect.width() >= 4 and rect.height() >= 4 and self._partition:
+                self._context.ClearSelected(False)
+                self._context.Select(
+                    rect.left(), rect.top(), rect.right(), rect.bottom(), self._view, True
+                )
+                self._context.InitSelected()
+                seen: set[str] = set()
+                while self._context.MoreSelected():
+                    picked = self._context.SelectedShape()
+                    for face_id, face in self._partition.faces.items():
+                        if face_id not in seen and face.IsSame(picked):
+                            seen.add(face_id)
+                            selected.append(face_id)
+                            break
+                    self._context.NextSelected()
+            self.faces_box_selected.emit(selected)
         elif event.button() == Qt.LeftButton and distance < 5:
             self._context.MoveTo(position.x(), position.y(), self._view, True)
             self._context.Select(True)
