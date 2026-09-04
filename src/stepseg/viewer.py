@@ -261,17 +261,19 @@ class OccViewport(QWidget):
             self.faces_box_selected.emit(selected)
         elif event.button() == Qt.LeftButton and distance < 5:
             self._context.MoveTo(position.x(), position.y(), self._view, True)
-            self._context.Select(True)
-            self._context.InitSelected()
-            if self._context.HasSelectedShape():
-                picked = self._context.SelectedShape()
-                if self._partition:
-                    for face_id, face in self._partition.faces.items():
-                        if face.IsSame(picked):
-                            self.face_picked.emit("partition", face_id)
-                            return
-                for entity in self._entities:
-                    face_id = entity.face_id_for(picked)
-                    if face_id:
-                        self.face_picked.emit(entity.id, face_id)
-                        break
+            # Read only the face currently under the cursor. Calling Select()
+            # here accumulates detected owners in the selection list and can
+            # make one click appear to select multiple faces.
+            if not self._context.HasDetectedShape():
+                return
+            picked = self._context.DetectedShape()
+            if self._partition:
+                for face_id, face in self._partition.faces.items():
+                    if face.IsSame(picked):
+                        self.face_picked.emit("partition", face_id)
+                        return
+            for entity in self._entities:
+                face_id = entity.face_id_for(picked)
+                if face_id:
+                    self.face_picked.emit(entity.id, face_id)
+                    break

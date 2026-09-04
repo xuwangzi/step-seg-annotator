@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QColorDialog, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
 
 from .export import export_faces, export_solids
@@ -181,7 +181,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("面组"))
         self.group_tree = QTreeWidget()
         self.group_tree.setHeaderLabels(["显示", "面组", "类别", "面数", "颜色"])
+        header = self.group_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.Fixed)
         self.group_tree.setColumnWidth(0, 42)
+        self.group_tree.setColumnWidth(2, 72)
+        self.group_tree.setColumnWidth(3, 48)
         self.group_tree.setColumnWidth(4, 66)
         self.group_tree.itemClicked.connect(self._group_selected)
         self.group_tree.itemChanged.connect(self._visibility_changed)
