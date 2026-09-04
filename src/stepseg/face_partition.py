@@ -39,6 +39,7 @@ from .topology import EntityShape, _bbox, _subshapes, load_step
 
 TWO_PI = 2.0 * math.pi
 MIN_SPAN = 1e-3
+PARTITION_CACHE_VERSION = "2"
 
 
 def _name(value: object) -> str:
@@ -385,23 +386,57 @@ def create_partition(entities: list[EntityShape]) -> FacePartition:
     return imprint_seams(partition)
 
 
-def _find_face(shape: TopoDS_Shape, expected: TopoDS_Face) -> TopoDS_Face | None:
-    for raw in _subshapes(shape, TopAbs_FACE):
-        face = TopoDS.Face_s(raw)
+def _find_face(
+    shape: TopoDS_Shape,
+    expected: TopoDS_Face,
+    record: FaceRecord | None = None,
+) -> TopoDS_Face | None:
+    current_faces = [TopoDS.Face_s(raw) for raw in _subshapes(shape, TopAbs_FACE)]
+    for face in current_faces:
         if face.IsSame(expected):
             return face
-    return None
+    if record is None:
+        return None
+
+    bounds = _bbox(shape)
+    diagonal = max(
+        math.sqrt(sum((bounds[index + 3] - bounds[index]) ** 2 for index in range(3))),
+        1.0,
+    )
+    linear_tolerance = max(diagonal * 1e-8, 1e-9)
+    area_tolerance = max(abs(record.area) * 1e-8, diagonal * diagonal * 1e-10, 1e-10)
+    matches: list[TopoDS_Face] = []
+    for face in current_faces:
+        if _surface_kind(face) != record.surface_kind:
+            continue
+        area, centroid = _face_area_centroid(face)
+        face_bounds = _bbox(face)
+        if abs(area - record.area) > area_tolerance:
+            continue
+        if any(
+            abs(actual - expected_value) > linear_tolerance
+            for actual, expected_value in zip(centroid, record.centroid, strict=True)
+        ):
+            continue
+        if any(
+            abs(actual - expected_value) > linear_tolerance
+            for actual, expected_value in zip(face_bounds, record.bbox, strict=True)
+        ):
+            continue
+        matches.append(face)
+    return matches[0] if len(matches) == 1 else None
 
 
 def imprint_seams(partition: FacePartition) -> FacePartition:
     shape = partition.shape
+    records_by_id = {record.id: record for record in partition.records}
     by_face: dict[str, list[Seam]] = {}
     for seam in partition.seams:
         by_face.setdefault(seam.face_id, []).append(seam)
     for face_id, seams in by_face.items():
-        face = _find_face(shape, partition.faces[face_id])
+        face = _find_face(shape, partition.faces[face_id], records_by_id.get(face_id))
         if face is None:
-            partition.notes.append(f"face {face_id} disappeared before imprint")
+            partition.notes.append(f"face {face_id} could not be uniquely rematched before imprint")
             continue
         edges = []
         for seam in seams:
@@ -432,7 +467,10 @@ def imprint_seams(partition: FacePartition) -> FacePartition:
 
 
 def snapshot_path(step_path: Path, source_sha256: str) -> Path:
-    return step_path.parent / ".stepseg-cache" / f"{source_sha256[:16]}-{OCP.__version__}.step"
+    filename = (
+        f"{source_sha256[:16]}-{OCP.__version__}-p{PARTITION_CACHE_VERSION}.step"
+    )
+    return step_path.parent / ".stepseg-cache" / filename
 
 
 def write_partition_step(shape: TopoDS_Shape, path: Path) -> None:
@@ -505,4 +543,6 @@ def partition_matches_document(partition: FacePartition, document: FaceAnnotatio
 
 def resolve_snapshot_path(document: FaceAnnotationDocument) -> Path:
     value = Path(document.snapshot_path)
-    return value if value.is_absolute() else Path(document.source_path).resolve().parent / value
+    stored = value if value.is_absolute() else Path(document.source_path).resolve().parent / value
+    expected = snapshot_path(Path(document.source_path), document.source_sha256)
+    return stored if stored.name == expected.name else expected

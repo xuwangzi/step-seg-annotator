@@ -99,6 +99,36 @@ def test_imprint_splits_a_face_without_changing_volume() -> None:
     assert BRepCheck_Analyzer(result.shape).IsValid()
 
 
+def test_imprint_rematches_adjacent_face_after_shape_rebuild() -> None:
+    shape = BRepPrimAPI_MakeBox(1, 1, 1).Shape()
+    faces, records = face_partition._make_records(shape)
+    partition = face_partition.FacePartition(shape, faces, records, "fused", [], [])
+    top = next(record for record in records if record.centroid[2] == pytest.approx(1.0))
+    side = next(record for record in records if record.centroid[0] == pytest.approx(1.0))
+    partition.seams = [
+        face_partition.Seam(
+            top.id,
+            face_partition.CurveId("line", ("top",), (0, 0.5, 1), (1, 0, 0)),
+            0,
+            1,
+            1,
+        ),
+        face_partition.Seam(
+            side.id,
+            face_partition.CurveId("line", ("side",), (1, 0, 0.5), (0, 1, 0)),
+            0,
+            1,
+            1,
+        ),
+    ]
+    result = face_partition.imprint_seams(partition)
+
+    assert len(result.records) == 8
+    assert result.notes == []
+    assert volume(result.shape) == pytest.approx(volume(shape), rel=1e-9)
+    assert BRepCheck_Analyzer(result.shape).IsValid()
+
+
 def test_snapshot_document_round_trip_and_export(tmp_path: Path) -> None:
     source = tmp_path / "part.step"
     shape = BRepPrimAPI_MakeBox(1, 2, 3).Shape()
@@ -115,6 +145,12 @@ def test_snapshot_document_round_trip_and_export(tmp_path: Path) -> None:
     restored = load_document(annotation)
     assert restored.schema_version == "3.0"
     assert not Path(restored.snapshot_path).is_absolute()
+    assert f"-p{face_partition.PARTITION_CACHE_VERSION}.step" in restored.snapshot_path
+    current_snapshot = face_partition.resolve_snapshot_path(restored)
+    current_snapshot_value = restored.snapshot_path
+    restored.snapshot_path = ".stepseg-cache/legacy.step"
+    assert face_partition.resolve_snapshot_path(restored) == current_snapshot
+    restored.snapshot_path = current_snapshot_value
     assert restored.validate() == []
     output = tmp_path / "export"
     paths = export_faces(restored, partition, output)
