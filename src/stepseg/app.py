@@ -269,7 +269,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.legacy_confirm_button)
 
         operation_box = QGroupBox("面组操作")
+        operation_box.setObjectName("faceGroupOperations")
+        self.face_group_operations = operation_box
         operation_layout = QVBoxLayout(operation_box)
+        operation_layout.setContentsMargins(10, 12, 10, 10)
+        operation_layout.setSpacing(8)
         self.selection_mode_card = QFrame()
         self.selection_mode_card.setObjectName("selectionModeCard")
         self.selection_mode_card.setMinimumHeight(82)
@@ -298,12 +302,17 @@ class MainWindow(QMainWindow):
         self.selection_hint = QLabel("按住 Space 并移动鼠标，可连续选择经过的面")
         self.selection_hint.setWordWrap(True)
         self.selection_hint.setObjectName("selectionHint")
+        self.selection_hint.setMinimumHeight(34)
         operation_layout.addWidget(self.selection_hint)
         self.box_button = self.selection_mode_button  # compatibility with the former mode control
         self.selection_label = QLabel("选择面后将直接添加到当前面组")
         self.selection_label.setWordWrap(True)
+        self.selection_label.setObjectName("selectionStatus")
+        self.selection_label.setMinimumHeight(28)
         operation_layout.addWidget(self.selection_label)
         self.clear_selection_button = QPushButton("清除选择")
+        self.clear_selection_button.setObjectName("clearSelectionButton")
+        self.clear_selection_button.setMinimumHeight(30)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         operation_layout.addWidget(self.clear_selection_button)
         layout.addWidget(operation_box)
@@ -358,7 +367,7 @@ class MainWindow(QMainWindow):
     def _set_selection_mode_card_style(self, continuous: bool) -> None:
         """Apply the visual state for the temporary Spacebar selection mode."""
         self.selection_mode_card.setProperty("mode", "continuous" if continuous else "point")
-        self.selection_mode_card.setStyleSheet(
+        self.face_group_operations.setStyleSheet(
             """
             QFrame#selectionModeCard {
                 border-radius: 6px;
@@ -389,12 +398,41 @@ class MainWindow(QMainWindow):
             QLabel#selectionModeDescription {
                 color: #46515E;
             }
+            QGroupBox#faceGroupOperations {
+                margin-top: 8px;
+            }
             QLabel#selectionHint {
-                color: #666666;
-                padding: 2px 0px;
+                color: #536170;
+                background-color: #F5F7FA;
+                border: 1px solid #DCE2E8;
+                border-radius: 4px;
+                padding: 5px 8px;
+            }
+            QLabel#selectionStatus {
+                color: #3F4B58;
+                background-color: #F8FAFC;
+                border: 1px solid #E3E8EE;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QPushButton#clearSelectionButton {
+                color: #344454;
+                background-color: #FFFFFF;
+                border: 1px solid #B8C3CF;
+                border-radius: 4px;
+                padding: 4px 10px;
+            }
+            QPushButton#clearSelectionButton:hover {
+                background-color: #EEF5FC;
+                border-color: #6D9DCC;
+            }
+            QPushButton#clearSelectionButton:pressed {
+                background-color: #DDEBF8;
             }
             """
         )
+        self.face_group_operations.style().unpolish(self.face_group_operations)
+        self.face_group_operations.style().polish(self.face_group_operations)
         self.selection_mode_card.style().unpolish(self.selection_mode_card)
         self.selection_mode_card.style().polish(self.selection_mode_card)
         self.selection_mode_card.update()

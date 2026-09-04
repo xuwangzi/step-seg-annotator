@@ -62,6 +62,9 @@ def main() -> None:
         assert window.selection_mode_button.text() == "面点选"
         assert window.selection_mode_description.text() == "单击一个面进行选择"
         assert "按住 Space" in window.selection_hint.text()
+        assert window.selection_hint.objectName() == "selectionHint"
+        assert window.selection_label.objectName() == "selectionStatus"
+        assert window.clear_selection_button.objectName() == "clearSelectionButton"
         assert window.selection_mode_card.property("mode") == "point"
         window._continuous_state_changed(True)
         assert window.selection_mode_button.text() == "面连选"
