@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from .models import AnnotationDocument, now_iso
+from .models import AnnotationDocument, FaceAnnotationDocument, now_iso
 
 
 def sha256_file(path: Path) -> str:
@@ -26,8 +26,11 @@ def save_document(path: Path, document: AnnotationDocument) -> None:
     os.replace(temporary, target)
 
 
-def load_document(path: Path) -> AnnotationDocument:
-    return AnnotationDocument.from_dict(json.loads(path.read_text(encoding="utf-8")))
+def load_document(path: Path) -> AnnotationDocument | FaceAnnotationDocument:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") == "3.0":
+        return FaceAnnotationDocument.from_dict(payload)
+    return AnnotationDocument.from_dict(payload)
 
 
 def source_matches(step_path: Path, document: AnnotationDocument) -> bool:

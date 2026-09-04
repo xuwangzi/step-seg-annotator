@@ -10,7 +10,7 @@ from OCP.IFSelect import IFSelect_RetDone
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.TopoDS import TopoDS_Compound
 
-from .models import AnnotationDocument
+from .models import AnnotationDocument, FaceAnnotationDocument
 from .topology import EntityShape
 
 
@@ -103,3 +103,58 @@ def export_solids(
     )
     paths.append(manifest_path)
     return paths
+
+
+def export_faces(
+    document: FaceAnnotationDocument, partition, output_dir: Path
+) -> list[Path]:
+    """Export the imprinted face partition and its face-group manifest."""
+    errors = document.validate()
+    if errors:
+        raise ValueError("cannot export invalid annotation: " + "; ".join(errors))
+    actual_ids = {record.id for record in partition.records}
+    if actual_ids != {record.id for record in document.faces}:
+        raise ValueError("runtime face partition does not match the annotation")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    partition_path = output_dir / "partition.step"
+    _write_step(partition.shape, partition_path)
+    groups = {face_id: group.id for group in document.groups for face_id in group.face_ids}
+    taxonomy = {item.id: item for item in document.taxonomy}
+    payload = {
+        "schema_version": document.schema_version,
+        "source_path": document.source_path,
+        "source_sha256": document.source_sha256,
+        "ocp_version": document.ocp_version,
+        "fusion_mode": document.fusion_mode,
+        "snapshot_path": document.snapshot_path,
+        "snapshot_sha256": document.snapshot_sha256,
+        "status": document.status,
+        "faces": [
+            {
+                "id": face.id,
+                "surface_kind": face.surface_kind,
+                "area": face.area,
+                "centroid": face.centroid,
+                "bbox": face.bbox,
+                "source_body_ids": face.source_body_ids,
+                "group_id": groups.get(face.id),
+            }
+            for face in document.faces
+        ],
+        "groups": [
+            {
+                "id": group.id,
+                "name": group.name,
+                "class_id": group.class_id,
+                "class_key": taxonomy[group.class_id].key if group.class_id in taxonomy else None,
+                "color": group.color,
+                "note": group.note,
+                "face_ids": group.face_ids,
+            }
+            for group in document.groups
+        ],
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return [partition_path, manifest_path]

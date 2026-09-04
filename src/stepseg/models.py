@@ -9,6 +9,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "2.0"
+FACE_SCHEMA_VERSION = "3.0"
 
 
 def now_iso() -> str:
@@ -73,6 +74,134 @@ class SplitOperation:
     plane: PlaneSpec
     result_entity_ids: list[str]
     result_signatures: list[GeometrySignature]
+
+
+@dataclass(slots=True)
+class FaceRecord:
+    id: str
+    surface_kind: str
+    area: float
+    centroid: tuple[float, float, float]
+    bbox: tuple[float, float, float, float, float, float]
+    source_body_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class FaceGroupRecord:
+    id: str
+    name: str
+    class_id: int | None = None
+    color: str = "#71717A"
+    note: str = ""
+    face_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class FaceAnnotationDocument:
+    source_path: str
+    source_sha256: str
+    ocp_version: str
+    fusion_mode: str
+    snapshot_path: str
+    snapshot_sha256: str
+    faces: list[FaceRecord]
+    groups: list[FaceGroupRecord] = field(default_factory=list)
+    taxonomy: list[TaxonomyClass] = field(default_factory=default_taxonomy)
+    status: str = "draft"
+    annotator: str = ""
+    reviewer: str = ""
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+    schema_version: str = FACE_SCHEMA_VERSION
+
+    def class_by_id(self, class_id: int | None) -> TaxonomyClass | None:
+        if class_id is None:
+            return None
+        return next((item for item in self.taxonomy if item.id == class_id), None)
+
+    def group_by_id(self, group_id: str) -> FaceGroupRecord:
+        for group in self.groups:
+            if group.id == group_id:
+                return group
+        raise ValueError(f"unknown face group: {group_id}")
+
+    def face_ids(self) -> set[str]:
+        return {face.id for face in self.faces}
+
+    def assignments(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for group in self.groups:
+            for face_id in group.face_ids:
+                result[face_id] = group.id
+        return result
+
+    def validate(self, require_complete: bool | None = None) -> list[str]:
+        errors: list[str] = []
+        face_ids = self.face_ids()
+        class_ids = [item.id for item in self.taxonomy]
+        if len(class_ids) != len(set(class_ids)):
+            errors.append("taxonomy contains duplicate class ids")
+        group_ids = [group.id for group in self.groups]
+        if len(group_ids) != len(set(group_ids)):
+            errors.append("face groups contain duplicate ids")
+        assignments: dict[str, str] = {}
+        for group in self.groups:
+            if not group.face_ids:
+                errors.append(f"{group.id}: no faces")
+            if group.class_id is not None and group.class_id not in class_ids:
+                errors.append(f"{group.id}: unknown class {group.class_id}")
+            for face_id in group.face_ids:
+                if face_id not in face_ids:
+                    errors.append(f"{group.id}: unknown face {face_id}")
+                previous = assignments.setdefault(face_id, group.id)
+                if previous != group.id:
+                    errors.append(f"{face_id}: assigned by both {previous} and {group.id}")
+        if require_complete is None:
+            require_complete = self.status in {"completed", "reviewed"}
+        if require_complete:
+            missing = face_ids - set(assignments)
+            if missing:
+                errors.append(f"unassigned faces: {len(missing)}")
+        return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "FaceAnnotationDocument":
+        if payload.get("schema_version") != FACE_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported face annotation schema {payload.get('schema_version')!r}; "
+                f"expected {FACE_SCHEMA_VERSION}"
+            )
+
+        def face(value: dict[str, Any]) -> FaceRecord:
+            return FaceRecord(
+                id=value["id"],
+                surface_kind=value["surface_kind"],
+                area=float(value["area"]),
+                centroid=tuple(value["centroid"]),
+                bbox=tuple(value["bbox"]),
+                source_body_ids=list(value.get("source_body_ids", [])),
+            )
+
+        return cls(
+            source_path=payload["source_path"],
+            source_sha256=payload["source_sha256"],
+            ocp_version=payload["ocp_version"],
+            fusion_mode=payload.get("fusion_mode", "unknown"),
+            snapshot_path=payload["snapshot_path"],
+            snapshot_sha256=payload["snapshot_sha256"],
+            faces=[face(item) for item in payload["faces"]],
+            groups=[FaceGroupRecord(**item) for item in payload.get("groups", [])],
+            taxonomy=[TaxonomyClass(**item) for item in payload.get("taxonomy", [])]
+            or default_taxonomy(),
+            status=payload.get("status", "draft"),
+            annotator=payload.get("annotator", ""),
+            reviewer=payload.get("reviewer", ""),
+            created_at=payload.get("created_at", now_iso()),
+            updated_at=payload.get("updated_at", now_iso()),
+        )
 
 
 @dataclass(slots=True)

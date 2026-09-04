@@ -1,7 +1,8 @@
-"""Desktop application for interactive closed-solid STEP segmentation."""
+"""Desktop application for face-level STEP annotation."""
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from pathlib import Path
@@ -9,48 +10,26 @@ from pathlib import Path
 import OCP
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
-    QApplication,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QFormLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
+    QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
+    QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .export import export_solids
-from .models import AnnotationDocument, TaxonomyClass, annotation_path_for
-from .storage import load_document, save_document, source_matches
-from .topology import (
-    ENTITY_COLORS,
-    EntityShape,
-    SplitCandidate,
-    apply_split,
-    load_step,
-    new_document,
-    planar_split_candidates,
-    replay_document,
-    undo_last_split,
+from .export import export_faces, export_solids
+from .face_partition import (
+    FacePartition, face_document_for, file_sha256, load_or_create_partition,
+    load_partition_snapshot, partition_matches_document,
 )
+from .models import AnnotationDocument, FaceAnnotationDocument, FaceGroupRecord, TaxonomyClass, annotation_path_for
+from .storage import load_document, save_document, source_matches
+from .topology import EntityShape, apply_split, load_step, new_document, planar_split_candidates, replay_document, undo_last_split
 from .viewer import OccViewport
 
 
 class TaxonomyDialog(QDialog):
     def __init__(self, taxonomy: list[TaxonomyClass], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("实体类别")
+        self.setWindowTitle("面组类别")
         self.resize(620, 380)
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, 5)
@@ -80,8 +59,7 @@ class TaxonomyDialog(QDialog):
 
     def _add_new(self) -> None:
         ids = [int(self.table.item(row, 0).text()) for row in range(self.table.rowCount())]
-        next_id = max(ids, default=0) + 1
-        self._add_row(TaxonomyClass(next_id, f"class_{next_id}", f"类别 {next_id}", "#71717A"))
+        self._add_row(TaxonomyClass(max(ids, default=0) + 1, "class_new", "新类别", "#71717A"))
 
     def values(self) -> list[TaxonomyClass]:
         values: list[TaxonomyClass] = []
@@ -96,31 +74,26 @@ class TaxonomyDialog(QDialog):
             if key in keys:
                 raise ValueError(f"重复 key：{key}")
             keys.add(key)
-            values.append(
-                TaxonomyClass(
-                    class_id,
-                    key,
-                    name,
-                    color,
-                    self.table.item(row, 4).checkState() == Qt.Checked,
-                )
-            )
+            values.append(TaxonomyClass(class_id, key, name, color, self.table.item(row, 4).checkState() == Qt.Checked))
         return values
 
 
 class MainWindow(QMainWindow):
     def __init__(self, initial_path: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("STEP 实体分割标注工具")
+        self.setWindowTitle("STEP 面分割标注工具")
         self.resize(1500, 900)
         self.step_path: Path | None = None
-        self.document: AnnotationDocument | None = None
+        self.document: AnnotationDocument | FaceAnnotationDocument | None = None
         self.entities: list[EntityShape] = []
+        self.partition: FacePartition | None = None
         self.active_entity_id = ""
-        self.candidates: list[SplitCandidate] = []
+        self.active_group_id = ""
+        self.selected_face_ids: set[str] = set()
+        self.hidden_group_ids: set[str] = set()
+        self.candidates = []
         self.preview_index = -1
-        self.hidden_entity_ids: set[str] = set()
-        self.viewport: OccViewport
+        self._history: list[tuple[object, set[str], str]] = []
         self._build_ui()
         if initial_path:
             self.open_step(initial_path)
@@ -132,78 +105,79 @@ class MainWindow(QMainWindow):
         file_menu.addAction("打开 STEP", self._choose_step)
         file_menu.addSeparator()
         file_menu.addAction("保存", self.save)
-        file_menu.addAction("导出实体", self.export)
-
+        file_menu.addAction("导出面分割", self.export)
         edit_menu = menu_bar.addMenu("编辑")
-        edit_menu.addAction("撤销切分", self.undo)
+        edit_menu.addAction("撤销", self.undo)
         edit_menu.addAction("重置", self.reset)
-
         annotation_menu = menu_bar.addMenu("标注")
-        annotation_menu.addAction("实体类别", self.edit_taxonomy)
-
+        annotation_menu.addAction("面组类别", self.edit_taxonomy)
         view_menu = menu_bar.addMenu("视图")
         for label, direction in (("等轴", (1, -1, 1)), ("顶", (0, 0, 1)), ("前", (0, 1, 0))):
-            view_menu.addAction(
-                label, lambda _checked=False, item=direction: self.viewport.set_view(item)
-            )
+            view_menu.addAction(label, lambda _checked=False, item=direction: self.viewport.set_view(item))
         view_menu.addSeparator()
         view_menu.addAction("适配", lambda: self.viewport.fit_all())
         wire_action = view_menu.addAction("线框")
         wire_action.setCheckable(True)
         wire_action.toggled.connect(lambda enabled: self.viewport.toggle_wireframe(enabled))
-
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._make_left_panel())
         self.viewport = OccViewport(splitter)
         self.viewport.face_picked.connect(self._face_picked)
+        self.viewport.faces_box_selected.connect(self._faces_box_selected)
         splitter.addWidget(self.viewport)
         splitter.addWidget(self._make_right_panel())
         splitter.setSizes([300, 850, 350])
         self.setCentralWidget(splitter)
-        self.status_label = QLabel("打开 STEP 文件开始实体分割")
+        self.status_label = QLabel("打开 STEP 文件开始面分割标注")
         self.statusBar().addWidget(self.status_label)
 
     def _make_left_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("闭合实体"))
-        self.entity_tree = QTreeWidget()
-        self.entity_tree.setHeaderLabels(["显示", "实体", "类别", "体积"])
-        self.entity_tree.itemClicked.connect(self._entity_selected)
-        self.entity_tree.itemChanged.connect(self._visibility_changed)
-        layout.addWidget(self.entity_tree)
+        layout.addWidget(QLabel("面组"))
+        self.group_tree = QTreeWidget()
+        self.group_tree.setHeaderLabels(["显示", "面组", "类别", "面数"])
+        self.group_tree.itemClicked.connect(self._group_selected)
+        self.group_tree.itemChanged.connect(self._visibility_changed)
+        layout.addWidget(self.group_tree)
+        self.entity_tree = self.group_tree  # compatibility with the previous smoke test
         return panel
 
     def _make_right_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        self.selection_label = QLabel("点击实体表面以搜索平面切分候选")
+        self.selection_label = QLabel("点击细面以选择，或启用面框选")
         self.selection_label.setWordWrap(True)
         layout.addWidget(self.selection_label)
-        self.candidate_combo = QComboBox()
-        self.candidate_combo.currentIndexChanged.connect(self._preview_candidate)
-        layout.addWidget(self.candidate_combo)
+        self.candidate_combo = QComboBox()  # legacy 2.0 compatibility
+        self.candidate_combo.hide()
+        self.box_button = QPushButton("面框选")
+        self.box_button.setCheckable(True)
+        self.box_button.toggled.connect(self.viewport_box_mode_changed)
+        layout.addWidget(self.box_button)
         row = QHBoxLayout()
-        confirm = QPushButton("确认切分")
-        confirm.clicked.connect(self.confirm_split)
-        row.addWidget(confirm)
-        cancel = QPushButton("取消预览")
-        cancel.clicked.connect(self.cancel_preview)
-        row.addWidget(cancel)
+        for label, callback in (("新建面组", self.new_group), ("合并到当前组", self.merge_selected), ("清除选择", self.clear_selection)):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            row.addWidget(button)
         layout.addLayout(row)
-
+        row = QHBoxLayout()
+        for label, callback in (("更新面组", self.update_group), ("删除面组", self.delete_group)):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            row.addWidget(button)
+        layout.addLayout(row)
         form = QFormLayout()
         self.name_edit = QLineEdit()
         self.class_combo = QComboBox()
         self.note_edit = QLineEdit()
-        form.addRow("实体名称", self.name_edit)
+        form.addRow("面组名称", self.name_edit)
         form.addRow("可选类别", self.class_combo)
         form.addRow("备注", self.note_edit)
         layout.addLayout(form)
-        apply_metadata = QPushButton("更新实体信息")
-        apply_metadata.clicked.connect(self.update_entity_metadata)
+        apply_metadata = QPushButton("更新面组信息")
+        apply_metadata.clicked.connect(self.update_group)
         layout.addWidget(apply_metadata)
-
         self.annotator_edit = QLineEdit()
         self.reviewer_edit = QLineEdit()
         self.status_combo = QComboBox()
@@ -217,6 +191,9 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return panel
 
+    def viewport_box_mode_changed(self, enabled: bool) -> None:
+        self.viewport.set_box_mode(enabled)
+
     def _choose_step(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "选择 STEP 文件", "", "STEP (*.step *.stp)")
         if filename:
@@ -224,62 +201,44 @@ class MainWindow(QMainWindow):
 
     def open_step(self, path: Path) -> None:
         try:
-            initial_entities = load_step(path)
             annotation = annotation_path_for(path)
             if annotation.exists():
                 document = load_document(annotation)
-                if not source_matches(path, document):
-                    raise ValueError("源 STEP 哈希与标注不一致")
-                if document.ocp_version != OCP.__version__:
-                    raise ValueError("OpenCascade 版本与标注创建时不一致，无法安全重放")
-                entities = replay_document(path, document)
+                if isinstance(document, FaceAnnotationDocument):
+                    if not source_matches(path, document) or document.ocp_version != OCP.__version__:
+                        raise ValueError("源 STEP 或 OpenCascade 版本与面标注不一致")
+                    snapshot = Path(document.snapshot_path)
+                    rebuild = not snapshot.exists() or file_sha256(snapshot) != document.snapshot_sha256
+                    if rebuild:
+                        partition, snapshot, _ = load_or_create_partition(path, snapshot, force=True)
+                        document.snapshot_path = str(snapshot.resolve())
+                        document.snapshot_sha256 = file_sha256(snapshot)
+                    else:
+                        partition = load_partition_snapshot(snapshot)
+                    if not partition_matches_document(partition, document):
+                        raise ValueError("面分割快照与面标注不一致")
+                    self.partition, self.document = partition, document
+                else:
+                    self.entities = replay_document(path, document)
+                    self.partition, self.document = None, document
             else:
-                entities = initial_entities
-                document = new_document(path, entities)
+                partition, snapshot, _ = load_or_create_partition(path)
+                self.partition = partition
+                self.document = face_document_for(path, partition, snapshot)
+            self.step_path = path
+            self._history.clear()
+            self.selected_face_ids.clear()
+            self.active_group_id = ""
+            self.annotator_edit.setText(self.document.annotator)
+            self.reviewer_edit.setText(self.document.reviewer)
+            self.status_combo.blockSignals(True)
+            self.status_combo.setCurrentText(self.document.status)
+            self.status_combo.blockSignals(False)
+            self._refresh_ui(fit=True)
+            count = len(self.document.faces) if isinstance(self.document, FaceAnnotationDocument) else len(self.entities)
+            self.status_label.setText(f"已载入 {path.name}：{count} 个" + ("细面" if isinstance(self.document, FaceAnnotationDocument) else "闭合实体"))
         except Exception as error:
             QMessageBox.critical(self, "导入失败", str(error))
-            return
-        self.step_path = path
-        self.document = document
-        self.entities = entities
-        self.active_entity_id = entities[0].id
-        self.annotator_edit.setText(document.annotator)
-        self.reviewer_edit.setText(document.reviewer)
-        self.status_combo.blockSignals(True)
-        self.status_combo.setCurrentText(document.status)
-        self.status_combo.blockSignals(False)
-        self._clear_candidates()
-        self._refresh_ui(fit=True)
-        self.status_label.setText(f"已载入 {path.name}：{len(entities)} 个闭合实体")
-
-    def _entity_colors(self) -> dict[str, str]:
-        if not self.document:
-            return {}
-        return {item.id: item.color for item in self.document.entities}
-
-    def _refresh_ui(self, fit: bool = False) -> None:
-        if not self.document:
-            return
-        self.entity_tree.blockSignals(True)
-        self.entity_tree.clear()
-        for record in self.document.entities:
-            category = self.document.class_by_id(record.class_id)
-            item = QTreeWidgetItem(
-                ["", record.name or record.id, category.name_zh if category else "未分类", f"{record.signature.volume:.6g}"]
-            )
-            item.setData(0, Qt.UserRole, record.id)
-            item.setCheckState(
-                0, Qt.Unchecked if record.id in self.hidden_entity_ids else Qt.Checked
-            )
-            self.entity_tree.addTopLevelItem(item)
-            if record.id == self.active_entity_id:
-                self.entity_tree.setCurrentItem(item)
-        self.entity_tree.blockSignals(False)
-        self._refresh_class_combo()
-        self._load_active_metadata()
-        self.viewport.display_entities(
-            self.entities, self._entity_colors(), self.active_entity_id or None, fit=fit
-        )
 
     def _refresh_class_combo(self) -> None:
         if not self.document:
@@ -290,157 +249,232 @@ class MainWindow(QMainWindow):
         for item in self.document.taxonomy:
             if item.enabled:
                 self.class_combo.addItem(item.name_zh, item.id)
-        index = self.class_combo.findData(current)
-        self.class_combo.setCurrentIndex(max(index, 0))
+        self.class_combo.setCurrentIndex(max(self.class_combo.findData(current), 0))
 
-    def _active_record(self):
-        if not self.document or not self.active_entity_id:
-            return None
-        return next((item for item in self.document.entities if item.id == self.active_entity_id), None)
-
-    def _active_shape(self):
-        return next((item for item in self.entities if item.id == self.active_entity_id), None)
-
-    def _load_active_metadata(self) -> None:
-        record = self._active_record()
-        if not record:
+    def _refresh_ui(self, fit: bool = False) -> None:
+        if not self.document:
             return
-        self.name_edit.setText(record.name)
-        self.note_edit.setText(record.note)
-        index = self.class_combo.findData(record.class_id)
-        self.class_combo.setCurrentIndex(max(index, 0))
+        self._refresh_class_combo()
+        self.group_tree.blockSignals(True)
+        self.group_tree.clear()
+        if isinstance(self.document, FaceAnnotationDocument):
+            for group in self.document.groups:
+                category = self.document.class_by_id(group.class_id)
+                item = QTreeWidgetItem(["", group.name or group.id, category.name_zh if category else "未分类", str(len(group.face_ids))])
+                item.setData(0, Qt.UserRole, group.id)
+                item.setCheckState(0, Qt.Unchecked if group.id in self.hidden_group_ids else Qt.Checked)
+                self.group_tree.addTopLevelItem(item)
+                if group.id == self.active_group_id:
+                    self.group_tree.setCurrentItem(item)
+            self._load_active_group_metadata()
+            self._redraw_faces(fit)
+        else:
+            for record in self.document.entities:
+                item = QTreeWidgetItem(["", record.name or record.id, "旧版实体", f"{record.signature.volume:.6g}"])
+                item.setData(0, Qt.UserRole, record.id)
+                self.group_tree.addTopLevelItem(item)
+            self.viewport.display_entities(self.entities, {item.id: item.color for item in self.document.entities}, self.active_entity_id or None, fit=fit)
+        self.group_tree.blockSignals(False)
 
-    def _entity_selected(self, item: QTreeWidgetItem) -> None:
-        self.cancel_preview()
-        self.active_entity_id = item.data(0, Qt.UserRole)
-        self._load_active_metadata()
-        self.viewport.display_entities(self.entities, self._entity_colors(), self.active_entity_id)
+    def _redraw_faces(self, fit: bool = False) -> None:
+        if not self.partition or not isinstance(self.document, FaceAnnotationDocument):
+            return
+        colors = {face.id: "#8B8B8B" for face in self.document.faces}
+        for group in self.document.groups:
+            if group.id not in self.hidden_group_ids:
+                for face_id in group.face_ids:
+                    colors[face_id] = group.color
+        for face_id in self.selected_face_ids:
+            colors[face_id] = "#FACC15"
+        self.viewport.display_partition(self.partition, colors, fit=fit)
+        self.selection_label.setText(f"已选择 {len(self.selected_face_ids)} 个细面；面组 {self.active_group_id or '-'}")
+
+    def _active_group(self) -> FaceGroupRecord | None:
+        if not isinstance(self.document, FaceAnnotationDocument):
+            return None
+        return next((group for group in self.document.groups if group.id == self.active_group_id), None)
+
+    def _load_active_group_metadata(self) -> None:
+        group = self._active_group()
+        if not group:
+            self.name_edit.clear()
+            self.note_edit.clear()
+            return
+        self.name_edit.setText(group.name)
+        self.note_edit.setText(group.note)
+        self.class_combo.setCurrentIndex(max(self.class_combo.findData(group.class_id), 0))
+
+    def _group_selected(self, item: QTreeWidgetItem) -> None:
+        value = item.data(0, Qt.UserRole)
+        if isinstance(self.document, FaceAnnotationDocument):
+            self.active_group_id = value
+            group = self._active_group()
+            self.selected_face_ids = set(group.face_ids if group else [])
+            self._load_active_group_metadata()
+            self._redraw_faces()
+        else:
+            self.active_entity_id = value
 
     def _visibility_changed(self, item: QTreeWidgetItem) -> None:
-        entity_id = item.data(0, Qt.UserRole)
-        visible = item.checkState(0) == Qt.Checked
-        if visible:
-            self.hidden_entity_ids.discard(entity_id)
+        if not isinstance(self.document, FaceAnnotationDocument):
+            return
+        group_id = item.data(0, Qt.UserRole)
+        if item.checkState(0) == Qt.Checked:
+            self.hidden_group_ids.discard(group_id)
         else:
-            self.hidden_entity_ids.add(entity_id)
-        self.viewport.set_entity_visible(entity_id, visible)
+            self.hidden_group_ids.add(group_id)
+        self._redraw_faces()
+
+    def _remember(self) -> None:
+        if isinstance(self.document, FaceAnnotationDocument):
+            self._history.append((copy.deepcopy(self.document), set(self.selected_face_ids), self.active_group_id))
 
     def _face_picked(self, entity_id: str, face_id: str) -> None:
-        self.active_entity_id = entity_id
-        entity = self._active_shape()
-        if entity is None:
+        if not isinstance(self.document, FaceAnnotationDocument):
+            self.active_entity_id = entity_id
+            entity = next((item for item in self.entities if item.id == entity_id), None)
+            if entity:
+                self.candidates = planar_split_candidates(entity, face_id)
+                self.candidate_combo.clear()
+                for index, candidate in enumerate(self.candidates, 1):
+                    self.candidate_combo.addItem(f"候选 {index}：{len(candidate.result_shapes)} 个实体")
+                self.preview_index = 0 if self.candidates else -1
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            self.candidates = planar_split_candidates(entity, face_id)
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.candidate_combo.blockSignals(True)
-        self.candidate_combo.clear()
-        for index, candidate in enumerate(self.candidates, start=1):
-            volumes = ", ".join(f"{item.volume:.4g}" for item in candidate.result_signatures)
-            self.candidate_combo.addItem(
-                f"候选 {index}：{len(candidate.result_shapes)} 个实体；体积 {volumes}"
-            )
-        self.candidate_combo.blockSignals(False)
-        if not self.candidates:
-            self.preview_index = -1
-            self.selection_label.setText("未发现能产生多个闭合实体的平面")
-            self.viewport.display_entities(self.entities, self._entity_colors(), entity_id)
+        self._remember()
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers & Qt.ControlModifier:
+            self.selected_face_ids.discard(face_id)
+        elif modifiers & Qt.ShiftModifier:
+            self.selected_face_ids.add(face_id)
+        else:
+            self.selected_face_ids = {face_id}
+        self._redraw_faces()
+
+    def _faces_box_selected(self, face_ids: list[str]) -> None:
+        if not isinstance(self.document, FaceAnnotationDocument):
             return
-        self.selection_label.setText(f"{entity_id}：发现 {len(self.candidates)} 个候选切平面")
-        self.candidate_combo.setCurrentIndex(0)
-        self._preview_candidate(0)
-
-    def _preview_candidate(self, index: int) -> None:
-        if index < 0 or index >= len(self.candidates) or not self.active_entity_id:
-            return
-        self.preview_index = index
-        candidate = self.candidates[index]
-        normal = ", ".join(f"{item:.4g}" for item in candidate.plane.normal)
-        self.selection_label.setText(
-            f"预览 {index + 1}：平面 n=({normal}), d={candidate.plane.offset:.6g}"
-        )
-        self.viewport.display_preview(
-            self.entities, self.active_entity_id, candidate.result_shapes, self._entity_colors()
-        )
-
-    def _clear_candidates(self) -> None:
-        self.candidates = []
-        self.preview_index = -1
-        self.candidate_combo.blockSignals(True)
-        self.candidate_combo.clear()
-        self.candidate_combo.blockSignals(False)
-
-    def cancel_preview(self) -> None:
-        self._clear_candidates()
-        if self.document:
-            self.selection_label.setText("点击实体表面以搜索平面切分候选")
-            self.viewport.display_entities(
-                self.entities, self._entity_colors(), self.active_entity_id or None
-            )
+        self._remember()
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers & Qt.ControlModifier:
+            self.selected_face_ids.difference_update(face_ids)
+        elif modifiers & Qt.ShiftModifier:
+            self.selected_face_ids.update(face_ids)
+        else:
+            self.selected_face_ids = set(face_ids)
+        self._redraw_faces()
 
     def confirm_split(self) -> None:
-        if not self.document or self.preview_index < 0:
+        """Compatibility entry point for 2.0 documents and older integrations."""
+        if not isinstance(self.document, AnnotationDocument) or self.preview_index < 0:
             return
         candidate = self.candidates[self.preview_index]
-        try:
-            self.entities = apply_split(
-                self.document, self.entities, self.active_entity_id, candidate.plane
-            )
-        except Exception as error:
-            QMessageBox.warning(self, "切分失败", str(error))
-            return
+        self.entities = apply_split(self.document, self.entities, self.active_entity_id, candidate.plane)
         self.active_entity_id = self.document.split_operations[-1].result_entity_ids[0]
-        self.hidden_entity_ids.intersection_update(item.id for item in self.entities)
-        self._clear_candidates()
         self._refresh_ui()
         self.save(silent=True)
-        self.status_label.setText(f"切分完成：当前 {len(self.entities)} 个闭合实体")
+
+    def clear_selection(self) -> None:
+        if self.selected_face_ids:
+            self._remember()
+            self.selected_face_ids.clear()
+            self._redraw_faces()
+
+    def new_group(self) -> None:
+        if not isinstance(self.document, FaceAnnotationDocument):
+            return
+        self._remember()
+        numbers = [int(group.id.removeprefix("group_")) for group in self.document.groups if group.id.removeprefix("group_").isdigit()]
+        number = max(numbers, default=0) + 1
+        group = FaceGroupRecord(f"group_{number:04d}", f"面组_{number:04d}")
+        self.document.groups.append(group)
+        self.active_group_id = group.id
+        self._refresh_ui()
+        self.save(silent=True)
+
+    def merge_selected(self) -> None:
+        group = self._active_group()
+        if not group or not self.selected_face_ids:
+            return
+        self._remember()
+        selected = set(self.selected_face_ids)
+        for other in self.document.groups:
+            if other.id != group.id:
+                other.face_ids = [face_id for face_id in other.face_ids if face_id not in selected]
+        group.face_ids = sorted(set(group.face_ids) | selected)
+        self._refresh_ui()
+        self.save(silent=True)
+
+    def update_group(self) -> None:
+        group = self._active_group()
+        if not group:
+            return
+        self._remember()
+        group.name = self.name_edit.text().strip() or group.id
+        group.note = self.note_edit.text().strip()
+        group.class_id = self.class_combo.currentData()
+        category = self.document.class_by_id(group.class_id)
+        group.color = category.color if category else "#71717A"
+        self._refresh_ui()
+        self.save(silent=True)
+
+    def delete_group(self) -> None:
+        group = self._active_group()
+        if not group:
+            return
+        self._remember()
+        self.document.groups.remove(group)
+        self.active_group_id = ""
+        self.selected_face_ids.clear()
+        self._refresh_ui()
+        self.save(silent=True)
+
+    def _status_changed(self, status: str) -> None:
+        if not self.document:
+            return
+        if isinstance(self.document, FaceAnnotationDocument) and status in {"completed", "reviewed"}:
+            errors = self.document.validate(require_complete=True)
+            if errors:
+                QMessageBox.warning(self, "无法完成", "\n".join(errors))
+                self.status_combo.blockSignals(True)
+                self.status_combo.setCurrentText("draft")
+                self.status_combo.blockSignals(False)
+                return
+        self._remember()
+        self.document.status = status
+        self.save(silent=True)
 
     def undo(self) -> None:
-        if not self.document or not self.step_path or not self.document.split_operations:
-            return
-        try:
+        if isinstance(self.document, FaceAnnotationDocument) and self._history:
+            document, selected, active = self._history.pop()
+            self.document, self.selected_face_ids, self.active_group_id = document, selected, active
+            self._refresh_ui()
+            self.save(silent=True)
+        elif isinstance(self.document, AnnotationDocument) and self.step_path and self.document.split_operations:
             undo_last_split(self.document)
             self.entities = replay_document(self.step_path, self.document)
-        except Exception as error:
-            QMessageBox.warning(self, "撤销失败", str(error))
-            return
-        self.active_entity_id = self.entities[0].id
-        self.hidden_entity_ids.intersection_update(item.id for item in self.entities)
-        self._clear_candidates()
-        self._refresh_ui()
-        self.save(silent=True)
+            self._refresh_ui()
+            self.save(silent=True)
 
     def reset(self) -> None:
-        if not self.step_path or not self.document:
+        if not self.step_path or QMessageBox.question(self, "重置", "清除所有面组标注？") != QMessageBox.Yes:
             return
-        if QMessageBox.question(self, "重置", "清除所有切分和实体信息？") != QMessageBox.Yes:
-            return
-        self.entities = load_step(self.step_path)
-        self.document = new_document(self.step_path, self.entities)
-        self.active_entity_id = self.entities[0].id
-        self.hidden_entity_ids.clear()
-        self._clear_candidates()
-        self._refresh_ui()
-        self.save(silent=True)
-
-    def update_entity_metadata(self) -> None:
-        record = self._active_record()
-        if not record or not self.document:
-            return
-        record.name = self.name_edit.text().strip() or record.id
-        record.note = self.note_edit.text().strip()
-        record.class_id = self.class_combo.currentData()
-        category = self.document.class_by_id(record.class_id)
-        if category:
-            record.color = category.color
-        else:
-            number = int(record.id.removeprefix("entity_"))
-            record.color = ENTITY_COLORS[(number - 1) % len(ENTITY_COLORS)]
-        self._refresh_ui()
-        self.save(silent=True)
+        try:
+            if isinstance(self.document, AnnotationDocument):
+                self.entities = load_step(self.step_path)
+                self.document = new_document(self.step_path, self.entities)
+                self._refresh_ui(fit=True)
+                self.save(silent=True)
+                return
+            partition, snapshot, _ = load_or_create_partition(self.step_path)
+            self.partition = partition
+            self.document = face_document_for(self.step_path, partition, snapshot)
+            self.selected_face_ids.clear()
+            self.active_group_id = ""
+            self._history.clear()
+            self._refresh_ui(fit=True)
+            self.save(silent=True)
+        except Exception as error:
+            QMessageBox.warning(self, "重置失败", str(error))
 
     def edit_taxonomy(self) -> None:
         if not self.document:
@@ -456,11 +490,6 @@ class MainWindow(QMainWindow):
         self._refresh_ui()
         self.save(silent=True)
 
-    def _status_changed(self, status: str) -> None:
-        if self.document:
-            self.document.status = status
-            self.save(silent=True)
-
     def save(self, silent: bool = False) -> None:
         if not self.document or not self.step_path:
             return
@@ -471,17 +500,18 @@ class MainWindow(QMainWindow):
             if not silent:
                 QMessageBox.warning(self, "无法保存", "\n".join(errors))
             return
+            return
         save_document(annotation_path_for(self.step_path), self.document)
         self.status_label.setText("已自动保存" if silent else "已保存")
 
     def export(self) -> None:
         if not self.document:
             return
-        directory = QFileDialog.getExistingDirectory(self, "选择实体导出目录")
+        directory = QFileDialog.getExistingDirectory(self, "选择导出目录")
         if not directory:
             return
         try:
-            paths = export_solids(self.document, self.entities, Path(directory))
+            paths = export_faces(self.document, self.partition, Path(directory)) if isinstance(self.document, FaceAnnotationDocument) else export_solids(self.document, self.entities, Path(directory))
         except Exception as error:
             QMessageBox.warning(self, "导出失败", str(error))
             return

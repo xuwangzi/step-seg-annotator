@@ -12,14 +12,16 @@ from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_Viewer
-from PyQt5.QtCore import QPoint, Qt, pyqtSignal
+from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget
 
+from .face_partition import FacePartition
 from .topology import ENTITY_COLORS, EntityShape
 
 
 class OccViewport(QWidget):
     face_picked = pyqtSignal(str, str)
+    faces_box_selected = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -31,9 +33,12 @@ class OccViewport(QWidget):
         self._press = QPoint()
         self._last = QPoint()
         self._entities: list[EntityShape] = []
+        self._partition: FacePartition | None = None
         self._ais_by_id: dict[str, AIS_ColoredShape] = {}
         self._hidden_ids: set[str] = set()
         self._wireframe = False
+        self._box_mode = False
+        self._box_rect: QRect | None = None
         self._connection = Aspect_DisplayConnection()
         self._driver = OpenGl_GraphicDriver(self._connection)
         self._viewer = V3d_Viewer(self._driver)
@@ -74,6 +79,12 @@ class OccViewport(QWidget):
         self._ensure_initialized()
         self._view.MustBeResized()
         self._view.Redraw()
+        if self._box_rect is not None:
+            from PyQt5.QtGui import QPainter, QPen
+
+            painter = QPainter(self)
+            painter.setPen(QPen(Qt.yellow, 1, Qt.DashLine))
+            painter.drawRect(self._box_rect.normalized())
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -101,6 +112,7 @@ class OccViewport(QWidget):
         self._context.RemoveAll(False)
         self._ais_by_id.clear()
         self._entities = []
+        self._partition = None
 
     def display_entities(
         self,
@@ -119,6 +131,31 @@ class OccViewport(QWidget):
         self._context.UpdateCurrentViewer()
         if fit:
             self.fit_all()
+
+    def display_partition(self, partition: FacePartition, colors: dict[str, str], fit: bool = False) -> None:
+        self.clear()
+        self._partition = partition
+        self._display_shape("partition", partition.shape, "#8B8B8B", True)
+        ais = self._ais_by_id["partition"]
+        for face_id, face in partition.faces.items():
+            ais.SetCustomColor(face, self._occ_color(colors.get(face_id, "#8B8B8B")))
+        self._context.Redisplay(ais, False)
+        self._context.UpdateCurrentViewer()
+        if fit:
+            self.fit_all()
+
+    def set_face_colors(self, colors: dict[str, str]) -> None:
+        if not self._partition or "partition" not in self._ais_by_id:
+            return
+        ais = self._ais_by_id["partition"]
+        for face_id, face in self._partition.faces.items():
+            ais.SetCustomColor(face, self._occ_color(colors.get(face_id, "#8B8B8B")))
+        self._context.Redisplay(ais, False)
+        self._view.Redraw()
+
+    def set_box_mode(self, enabled: bool) -> None:
+        self._box_mode = enabled
+        self._box_rect = None
 
     def display_preview(
         self,
@@ -172,12 +209,18 @@ class OccViewport(QWidget):
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         self._press = event.pos()
         self._last = self._press
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and self._box_mode:
+            self._box_rect = QRect(self._press, self._press)
+            self.update()
+        elif event.button() == Qt.LeftButton:
             self._view.StartRotation(self._press.x(), self._press.y())
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         position = event.pos()
-        if event.buttons() & Qt.LeftButton and event.modifiers() == Qt.NoModifier:
+        if self._box_mode and self._box_rect is not None and event.buttons() & Qt.LeftButton:
+            self._box_rect.setBottomRight(position)
+            self.update()
+        elif event.buttons() & Qt.LeftButton and event.modifiers() == Qt.NoModifier:
             self._view.Rotation(position.x(), position.y())
         elif event.buttons() & Qt.MiddleButton:
             self._view.Pan(position.x() - self._last.x(), self._last.y() - position.y())
@@ -190,12 +233,33 @@ class OccViewport(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         position = event.pos()
         distance = abs(position.x() - self._press.x()) + abs(position.y() - self._press.y())
-        if event.button() == Qt.LeftButton and distance < 5:
+        if self._box_mode and event.button() == Qt.LeftButton and self._box_rect is not None:
+            rect = self._box_rect.normalized()
+            self._box_rect = None
+            self.update()
+            if rect.width() >= 4 and rect.height() >= 4:
+                self._context.Select(rect.left(), rect.top(), rect.right(), rect.bottom(), self._view, True)
+                selected: list[str] = []
+                self._context.InitSelected()
+                while self._context.MoreSelected():
+                    picked = self._context.SelectedShape()
+                    if self._partition:
+                        for face_id, face in self._partition.faces.items():
+                            if face.IsSame(picked) and face_id not in selected:
+                                selected.append(face_id)
+                    self._context.NextSelected()
+                self.faces_box_selected.emit(selected)
+        elif event.button() == Qt.LeftButton and distance < 5:
             self._context.MoveTo(position.x(), position.y(), self._view, True)
             self._context.Select(True)
             self._context.InitSelected()
             if self._context.HasSelectedShape():
                 picked = self._context.SelectedShape()
+                if self._partition:
+                    for face_id, face in self._partition.faces.items():
+                        if face.IsSame(picked):
+                            self.face_picked.emit("partition", face_id)
+                            return
                 for entity in self._entities:
                     face_id = entity.face_id_for(picked)
                     if face_id:
