@@ -39,7 +39,7 @@ from .topology import EntityShape, _bbox, _subshapes, load_step
 
 TWO_PI = 2.0 * math.pi
 MIN_SPAN = 1e-3
-PARTITION_CACHE_VERSION = "2"
+PARTITION_CACHE_VERSION = "3"
 
 
 def _name(value: object) -> str:
@@ -143,7 +143,8 @@ def _param(cid: CurveId, point: tuple[float, float, float]) -> float:
          cid.axis[2] * cid.ref[0] - cid.axis[0] * cid.ref[2],
          cid.axis[0] * cid.ref[1] - cid.axis[1] * cid.ref[0])
     x_value = sum(a * b for a, b in zip(delta, cid.ref)) / max(cid.radius, 1e-300)
-    y_value = sum(a * b for a, b in zip(delta, y)) / max(cid.radius2, 1e-300)
+    denominator = cid.radius2 if cid.kind == "ellipse" else cid.radius
+    y_value = sum(a * b for a, b in zip(delta, y)) / max(denominator, 1e-300)
     return math.atan2(y_value, x_value) % TWO_PI
 
 

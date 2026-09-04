@@ -514,7 +514,8 @@ class MainWindow(QMainWindow):
                     snapshot = resolve_snapshot_path(document)
                     rebuild = not snapshot.exists() or file_sha256(snapshot) != document.snapshot_sha256
                     if rebuild:
-                        partition, snapshot, _ = load_or_create_partition(path, snapshot, force=True)
+                        # Rebuild into the current algorithm-versioned cache path.
+                        partition, snapshot, _ = load_or_create_partition(path, force=True)
                         document.snapshot_path = str(snapshot.resolve().relative_to(path.resolve().parent))
                         document.snapshot_sha256 = file_sha256(snapshot)
                     else:

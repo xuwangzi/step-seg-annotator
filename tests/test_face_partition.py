@@ -51,6 +51,17 @@ def test_analytic_curve_identity_and_bspline_exclusion() -> None:
     assert face_partition.curve_id(spline, 10) is None
 
 
+def test_circle_parameters_use_circle_radius_for_both_axes() -> None:
+    cid = face_partition.curve_id(
+        Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 3), 10
+    )
+    assert cid is not None
+    assert face_partition._param(cid, (3, 0, 0)) == pytest.approx(0)
+    assert face_partition._param(cid, (0, 3, 0)) == pytest.approx(0.25 * face_partition.TWO_PI)
+    assert face_partition._param(cid, (-3, 0, 0)) == pytest.approx(0.5 * face_partition.TWO_PI)
+    assert face_partition._param(cid, (0, -3, 0)) == pytest.approx(0.75 * face_partition.TWO_PI)
+
+
 def test_fuses_touching_solids_and_records_face_sources() -> None:
     first = build_entity(BRepPrimAPI_MakeBox(2, 2, 2).Shape(), "entity_0001", "solid_0001")
     second = build_entity(
