@@ -18,19 +18,45 @@ B 样条不会参与 seam 推断。无法安全融合的多 Solid 输入会保�
 
 ## 安装与运行
 
-需要 Python 3.12 和 `uv`：
+需要 Python 3.12 和 `uv`。首次安装或依赖发生变化时执行：
 
 ```bash
 uv sync --locked --dev --no-editable
-uv run --no-sync stepseg-annotator
-uv run --no-sync stepseg-annotator /path/to/part.step
+uv pip install --python .venv/Scripts/python.exe --no-deps --editable .
+```
+
+代码更新后不需要重新安装。关闭正在运行的旧程序，在项目目录执行：
+
+```powershell
+cd D:\code\step-seg-annotator
+.\.venv\Scripts\stepseg-annotator.exe
+```
+
+也可以在启动时指定 STEP 文件：
+
+```powershell
+.\.venv\Scripts\stepseg-annotator.exe D:\path\to\part.step
+```
+
+项目使用 editable 安装后，程序会直接加载 `src` 下的当前源码。若切换了 Git 分支，先确认分支和工作区状态：
+
+```powershell
+git branch --show-current
+git status
+```
+
+如果不使用 editable 安装，也可以始终通过源码启动：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m stepseg.launcher
 ```
 
 ## 标注流程
 
 1. 打开 STEP，等待融合、seam 检测和面压印完成。
 2. 在左下角新建面组，或在左侧选择已有面组作为当前面组。
-3. 使用“面点选”或“面框选”时，新面会直接加入当前面组，当前组中的面会移除；已经属于其他面组的面不能重复选择。`Shift` 强制追加，`Ctrl` 强制移除。框选只处理投影与选择框相交的可见面。
+3. 使用“面点选”或“面框选”时，新面会直接加入当前面组，当前组中的面会移除；已经属于其他面组的面会先从原面组移除，再加入当前面组。`Shift` 强制追加，`Ctrl` 强制移除。框选只处理投影与选择框相交的可见面。
 4. 在右侧“面组信息”中填写名称、颜色、类别和备注，点击“更新面组信息”。
 5. 所有细面恰好归入一个面组后，状态才可设为 `completed` 或 `reviewed`。
 6. 标注保存到源文件旁的 `.stepseg.json`，派生几何位于 `.stepseg-cache/`。
