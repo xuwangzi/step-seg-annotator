@@ -12,7 +12,7 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QColorDialog, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget, QHeaderView,
 )
@@ -270,13 +270,34 @@ class MainWindow(QMainWindow):
 
         operation_box = QGroupBox("面组操作")
         operation_layout = QVBoxLayout(operation_box)
-        self.selection_mode_button = QPushButton("面点选")
-        self.selection_mode_button.setFocusPolicy(Qt.NoFocus)
-        self.selection_mode_button.setToolTip("普通点选；按住空格并移动鼠标进行面连选")
-        operation_layout.addWidget(self.selection_mode_button)
-        self.selection_hint = QLabel("不按空格：面点选；按住空格并移动鼠标：面连选")
+        self.selection_mode_card = QFrame()
+        self.selection_mode_card.setObjectName("selectionModeCard")
+        self.selection_mode_card.setMinimumHeight(82)
+        card_layout = QVBoxLayout(self.selection_mode_card)
+        card_layout.setContentsMargins(12, 9, 12, 9)
+        card_layout.setSpacing(2)
+
+        mode_header = QHBoxLayout()
+        mode_header.setContentsMargins(0, 0, 0, 0)
+        mode_title = QLabel("当前模式")
+        mode_title.setObjectName("selectionModeTitle")
+        self.selection_mode_button = QLabel("面点选")
+        self.selection_mode_button.setObjectName("selectionModeName")
+        self.selection_mode_button.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        mode_header.addWidget(mode_title)
+        mode_header.addStretch()
+        mode_header.addWidget(self.selection_mode_button)
+        card_layout.addLayout(mode_header)
+
+        self.selection_mode_description = QLabel("单击一个面进行选择")
+        self.selection_mode_description.setObjectName("selectionModeDescription")
+        self.selection_mode_description.setWordWrap(True)
+        card_layout.addWidget(self.selection_mode_description)
+        operation_layout.addWidget(self.selection_mode_card)
+
+        self.selection_hint = QLabel("按住 Space 并移动鼠标，可连续选择经过的面")
         self.selection_hint.setWordWrap(True)
-        self.selection_hint.setStyleSheet("color: #666666;")
+        self.selection_hint.setObjectName("selectionHint")
         operation_layout.addWidget(self.selection_hint)
         self.box_button = self.selection_mode_button  # compatibility with the former mode control
         self.selection_label = QLabel("选择面后将直接添加到当前面组")
@@ -318,6 +339,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(status_box)
         layout.addStretch()
         self._group_color = "#71717A"
+        self._set_selection_mode_card_style(False)
         return panel
 
     def viewport_box_mode_changed(self, enabled: bool) -> None:
@@ -328,6 +350,54 @@ class MainWindow(QMainWindow):
 
     def _continuous_state_changed(self, continuous: bool) -> None:
         self.selection_mode_button.setText("面连选" if continuous else "面点选")
+        self.selection_mode_description.setText(
+            "移动鼠标连续选择" if continuous else "单击一个面进行选择"
+        )
+        self._set_selection_mode_card_style(continuous)
+
+    def _set_selection_mode_card_style(self, continuous: bool) -> None:
+        """Apply the visual state for the temporary Spacebar selection mode."""
+        self.selection_mode_card.setProperty("mode", "continuous" if continuous else "point")
+        self.selection_mode_card.setStyleSheet(
+            """
+            QFrame#selectionModeCard {
+                border-radius: 6px;
+                padding: 0px;
+            }
+            QFrame#selectionModeCard[mode="point"] {
+                background-color: #EAF3FF;
+                border: 1px solid #8DB8E8;
+            }
+            QFrame#selectionModeCard[mode="continuous"] {
+                background-color: #FFF4D6;
+                border: 2px solid #E59B22;
+            }
+            QLabel#selectionModeTitle {
+                color: #5B6573;
+                font-size: 11px;
+            }
+            QLabel#selectionModeName {
+                font-size: 16px;
+                font-weight: 600;
+            }
+            QFrame#selectionModeCard[mode="point"] QLabel#selectionModeName {
+                color: #1D5F9F;
+            }
+            QFrame#selectionModeCard[mode="continuous"] QLabel#selectionModeName {
+                color: #B86600;
+            }
+            QLabel#selectionModeDescription {
+                color: #46515E;
+            }
+            QLabel#selectionHint {
+                color: #666666;
+                padding: 2px 0px;
+            }
+            """
+        )
+        self.selection_mode_card.style().unpolish(self.selection_mode_card)
+        self.selection_mode_card.style().polish(self.selection_mode_card)
+        self.selection_mode_card.update()
 
     def _choose_step(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "选择 STEP 文件", "", "STEP (*.step *.stp)")

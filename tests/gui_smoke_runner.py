@@ -60,11 +60,17 @@ def main() -> None:
         assert window.step_tree.headerItem().text(0) == "文件"
         assert window.step_tree.headerItem().text(1) == "状态"
         assert window.selection_mode_button.text() == "面点选"
-        assert "按住空格" in window.selection_hint.text()
+        assert window.selection_mode_description.text() == "单击一个面进行选择"
+        assert "按住 Space" in window.selection_hint.text()
+        assert window.selection_mode_card.property("mode") == "point"
         window._continuous_state_changed(True)
         assert window.selection_mode_button.text() == "面连选"
+        assert window.selection_mode_description.text() == "移动鼠标连续选择"
+        assert window.selection_mode_card.property("mode") == "continuous"
         window._continuous_state_changed(False)
         assert window.selection_mode_button.text() == "面点选"
+        assert window.selection_mode_description.text() == "单击一个面进行选择"
+        assert window.selection_mode_card.property("mode") == "point"
         window.step_path = source_path
         window.entities = [entity]
         window.document = new_document(source_path, window.entities)
