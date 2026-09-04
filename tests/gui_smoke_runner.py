@@ -59,7 +59,11 @@ def main() -> None:
         ]
         assert window.step_tree.headerItem().text(0) == "文件"
         assert window.step_tree.headerItem().text(1) == "状态"
-        assert window.box_button.text() == "面连选"
+        assert window.selection_mode_button.text() == "面点选"
+        window._continuous_state_changed(True)
+        assert window.selection_mode_button.text() == "面连选"
+        window._continuous_state_changed(False)
+        assert window.selection_mode_button.text() == "面点选"
         window.step_path = source_path
         window.entities = [entity]
         window.document = new_document(source_path, window.entities)

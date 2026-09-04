@@ -23,6 +23,7 @@ class OccViewport(QWidget):
     face_picked = pyqtSignal(str, str)
     faces_box_selected = pyqtSignal(list)
     faces_continuous_selected = pyqtSignal(list)
+    continuous_state_changed = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -39,7 +40,7 @@ class OccViewport(QWidget):
         self._ais_by_id: dict[str, AIS_ColoredShape] = {}
         self._hidden_ids: set[str] = set()
         self._wireframe = False
-        self._continuous_mode = False
+        self._continuous_mode = True
         self._space_down = False
         self._continuous_seen: set[str] = set()
         self._connection = Aspect_DisplayConnection()
@@ -155,7 +156,9 @@ class OccViewport(QWidget):
 
     def set_continuous_mode(self, enabled: bool) -> None:
         self._continuous_mode = enabled
-        self._space_down = False
+        if not enabled and self._space_down:
+            self._space_down = False
+            self.continuous_state_changed.emit(False)
         self._continuous_seen.clear()
         if enabled:
             self.setFocus(Qt.OtherFocusReason)
@@ -221,6 +224,8 @@ class OccViewport(QWidget):
             self._view.StartRotation(self._press.x(), self._press.y())
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if not self.hasFocus():
+            self.setFocus(Qt.MouseFocusReason)
         position = event.pos()
         if self._continuous_mode and self._space_down:
             self._context.MoveTo(position.x(), position.y(), self._view, True)
@@ -268,6 +273,7 @@ class OccViewport(QWidget):
             if not event.isAutoRepeat():
                 self._space_down = True
                 self._continuous_seen.clear()
+                self.continuous_state_changed.emit(True)
             event.accept()
             return
         super().keyPressEvent(event)
@@ -277,11 +283,14 @@ class OccViewport(QWidget):
             if not event.isAutoRepeat():
                 self._space_down = False
                 self._continuous_seen.clear()
+                self.continuous_state_changed.emit(False)
             event.accept()
             return
         super().keyReleaseEvent(event)
 
     def focusOutEvent(self, event) -> None:  # type: ignore[override]
-        self._space_down = False
+        if self._space_down:
+            self._space_down = False
+            self.continuous_state_changed.emit(False)
         self._continuous_seen.clear()
         super().focusOutEvent(event)

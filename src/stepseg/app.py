@@ -11,7 +11,7 @@ import OCP
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QColorDialog, QDialog, QDialogButtonBox,
+    QApplication, QComboBox, QColorDialog, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget, QHeaderView,
@@ -198,6 +198,7 @@ class MainWindow(QMainWindow):
         self.viewport.face_picked.connect(self._face_picked)
         self.viewport.faces_box_selected.connect(self._faces_box_selected)
         self.viewport.faces_continuous_selected.connect(self._faces_continuous_selected)
+        self.viewport.continuous_state_changed.connect(self._continuous_state_changed)
         splitter.addWidget(self.viewport)
         splitter.addWidget(self._make_right_panel())
         splitter.setSizes([300, 850, 350])
@@ -269,20 +270,11 @@ class MainWindow(QMainWindow):
 
         operation_box = QGroupBox("面组操作")
         operation_layout = QVBoxLayout(operation_box)
-        mode_row = QHBoxLayout()
-        self.point_button = QPushButton("面点选")
-        self.point_button.setCheckable(True)
-        self.box_button = QPushButton("面连选")
-        self.box_button.setCheckable(True)
-        mode_group = QButtonGroup(self)
-        mode_group.setExclusive(True)
-        mode_group.addButton(self.point_button)
-        mode_group.addButton(self.box_button)
-        self.point_button.setChecked(True)
-        self.box_button.toggled.connect(self.viewport_continuous_mode_changed)
-        mode_row.addWidget(self.point_button)
-        mode_row.addWidget(self.box_button)
-        operation_layout.addLayout(mode_row)
+        self.selection_mode_button = QPushButton("面点选")
+        self.selection_mode_button.setFocusPolicy(Qt.NoFocus)
+        self.selection_mode_button.setToolTip("普通点选；按住空格并移动鼠标进行面连选")
+        operation_layout.addWidget(self.selection_mode_button)
+        self.box_button = self.selection_mode_button  # compatibility with the former mode control
         self.selection_label = QLabel("选择面后将直接添加到当前面组")
         self.selection_label.setWordWrap(True)
         operation_layout.addWidget(self.selection_label)
@@ -329,6 +321,9 @@ class MainWindow(QMainWindow):
 
     def viewport_continuous_mode_changed(self, enabled: bool) -> None:
         self.viewport.set_continuous_mode(enabled)
+
+    def _continuous_state_changed(self, continuous: bool) -> None:
+        self.selection_mode_button.setText("面连选" if continuous else "面点选")
 
     def _choose_step(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "选择 STEP 文件", "", "STEP (*.step *.stp)")
