@@ -137,22 +137,23 @@ class OccViewport(QWidget):
     def display_partition(self, partition: FacePartition, colors: dict[str, str], fit: bool = False) -> None:
         self.clear()
         self._partition = partition
-        self._display_shape("partition", partition.shape, "#8B8B8B", True)
-        ais = self._ais_by_id["partition"]
         for face_id, face in partition.faces.items():
-            ais.SetCustomColor(face, self._occ_color(colors.get(face_id, "#8B8B8B")))
-        self._context.Redisplay(ais, False)
+            # Keep every face as its own selectable AIS object. A single
+            # AIS_ColoredShape for the whole partition can return its parent
+            # shape from selection on some OCC backends.
+            self._display_shape(face_id, face, colors.get(face_id, "#8B8B8B"), True)
         self._context.UpdateCurrentViewer()
         if fit:
             self.fit_all()
 
     def set_face_colors(self, colors: dict[str, str]) -> None:
-        if not self._partition or "partition" not in self._ais_by_id:
+        if not self._partition:
             return
-        ais = self._ais_by_id["partition"]
         for face_id, face in self._partition.faces.items():
-            ais.SetCustomColor(face, self._occ_color(colors.get(face_id, "#8B8B8B")))
-        self._context.Redisplay(ais, False)
+            ais = self._ais_by_id.get(face_id)
+            if ais:
+                ais.SetColor(self._occ_color(colors.get(face_id, "#8B8B8B")))
+                self._context.Redisplay(ais, False)
         self._view.Redraw()
 
     def set_box_mode(self, enabled: bool) -> None:
