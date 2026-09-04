@@ -9,10 +9,12 @@ from pathlib import Path
 
 import OCP
 from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
-    QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QComboBox, QColorDialog, QDialog, QDialogButtonBox,
+    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .export import export_faces, export_solids
@@ -41,15 +43,18 @@ def update_face_selection(current: set[str], incoming: set[str], modifiers: int)
 
 def color_for_group(document: FaceAnnotationDocument, group: FaceGroupRecord) -> str:
     category = document.class_by_id(group.class_id)
-    used = {item.color for item in document.groups if item.id != group.id}
-    if category and category.color not in used:
-        return category.color
+    used = {item.color.upper() for item in document.groups if item.id != group.id}
+    stored = group.color.upper()
+    if stored and stored != "#71717A" and stored not in used:
+        return stored
+    if category and category.color.upper() not in used:
+        return category.color.upper()
     index = document.groups.index(group)
     for offset in range(len(GROUP_COLORS)):
         candidate = GROUP_COLORS[(index + offset) % len(GROUP_COLORS)]
-        if candidate not in used:
+        if candidate.upper() not in used:
             return candidate
-    return category.color if category else "#71717A"
+    return category.color.upper() if category else "#71717A"
 
 
 class TaxonomyDialog(QDialog):
@@ -166,59 +171,82 @@ class MainWindow(QMainWindow):
         self.group_tree.itemClicked.connect(self._group_selected)
         self.group_tree.itemChanged.connect(self._visibility_changed)
         layout.addWidget(self.group_tree)
+        button_row = QHBoxLayout()
+        self.new_group_button = QPushButton("+ 新建面组")
+        self.new_group_button.clicked.connect(self.new_group)
+        self.delete_group_button = QPushButton("- 删除面组")
+        self.delete_group_button.clicked.connect(self.delete_group)
+        button_row.addWidget(self.new_group_button)
+        button_row.addWidget(self.delete_group_button)
+        layout.addLayout(button_row)
         self.entity_tree = self.group_tree  # compatibility with the previous smoke test
         return panel
 
     def _make_right_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        self.selection_label = QLabel("点击细面以选择，或启用面框选")
-        self.selection_label.setWordWrap(True)
-        layout.addWidget(self.selection_label)
         self.candidate_combo = QComboBox()  # legacy 2.0 compatibility
         self.candidate_combo.hide()
         self.legacy_confirm_button = QPushButton("确认旧版实体切分")
         self.legacy_confirm_button.clicked.connect(self.confirm_split)
         self.legacy_confirm_button.hide()
         layout.addWidget(self.legacy_confirm_button)
+
+        operation_box = QGroupBox("面组操作")
+        operation_layout = QVBoxLayout(operation_box)
+        mode_row = QHBoxLayout()
+        self.point_button = QPushButton("面点选")
+        self.point_button.setCheckable(True)
         self.box_button = QPushButton("面框选")
         self.box_button.setCheckable(True)
+        mode_group = QButtonGroup(self)
+        mode_group.setExclusive(True)
+        mode_group.addButton(self.point_button)
+        mode_group.addButton(self.box_button)
+        self.point_button.setChecked(True)
         self.box_button.toggled.connect(self.viewport_box_mode_changed)
-        layout.addWidget(self.box_button)
-        row = QHBoxLayout()
-        for label, callback in (("新建面组", self.new_group), ("合并到当前组", self.merge_selected), ("清除选择", self.clear_selection)):
-            button = QPushButton(label)
-            button.clicked.connect(callback)
-            row.addWidget(button)
-        layout.addLayout(row)
-        row = QHBoxLayout()
-        for label, callback in (("更新面组", self.update_group), ("删除面组", self.delete_group)):
-            button = QPushButton(label)
-            button.clicked.connect(callback)
-            row.addWidget(button)
-        layout.addLayout(row)
+        mode_row.addWidget(self.point_button)
+        mode_row.addWidget(self.box_button)
+        operation_layout.addLayout(mode_row)
+        self.selection_label = QLabel("选择面后将直接添加到当前面组")
+        self.selection_label.setWordWrap(True)
+        operation_layout.addWidget(self.selection_label)
+        self.clear_selection_button = QPushButton("清除选择")
+        self.clear_selection_button.clicked.connect(self.clear_selection)
+        operation_layout.addWidget(self.clear_selection_button)
+        layout.addWidget(operation_box)
+
+        info_box = QGroupBox("面组信息")
+        info_layout = QVBoxLayout(info_box)
         form = QFormLayout()
         self.name_edit = QLineEdit()
+        self.color_button = QPushButton()
+        self.color_button.clicked.connect(self.choose_group_color)
         self.class_combo = QComboBox()
         self.note_edit = QLineEdit()
         form.addRow("面组名称", self.name_edit)
+        form.addRow("面组颜色", self.color_button)
         form.addRow("可选类别", self.class_combo)
         form.addRow("备注", self.note_edit)
-        layout.addLayout(form)
+        info_layout.addLayout(form)
         apply_metadata = QPushButton("更新面组信息")
         apply_metadata.clicked.connect(self.update_group)
-        layout.addWidget(apply_metadata)
+        info_layout.addWidget(apply_metadata)
+        layout.addWidget(info_box)
+
+        status_box = QGroupBox("标注状态")
+        status_layout = QVBoxLayout(status_box)
         self.annotator_edit = QLineEdit()
-        self.reviewer_edit = QLineEdit()
         self.status_combo = QComboBox()
         self.status_combo.addItems(["draft", "completed", "reviewed"])
         self.status_combo.currentTextChanged.connect(self._status_changed)
         form = QFormLayout()
         form.addRow("标注者", self.annotator_edit)
-        form.addRow("复核者", self.reviewer_edit)
         form.addRow("状态", self.status_combo)
-        layout.addLayout(form)
+        status_layout.addLayout(form)
+        layout.addWidget(status_box)
         layout.addStretch()
+        self._group_color = "#71717A"
         return panel
 
     def viewport_box_mode_changed(self, enabled: bool) -> None:
@@ -260,7 +288,6 @@ class MainWindow(QMainWindow):
             self.selected_face_ids.clear()
             self.active_group_id = ""
             self.annotator_edit.setText(self.document.annotator)
-            self.reviewer_edit.setText(self.document.reviewer)
             self.status_combo.blockSignals(True)
             self.status_combo.setCurrentText(self.document.status)
             self.status_combo.blockSignals(False)
@@ -333,18 +360,35 @@ class MainWindow(QMainWindow):
         group = self._active_group()
         if not group:
             self.name_edit.clear()
+            self._set_group_color("#71717A")
+            self.color_button.setEnabled(False)
             self.note_edit.clear()
             return
         self.name_edit.setText(group.name)
+        self._set_group_color(color_for_group(self.document, group))
+        self.color_button.setEnabled(True)
         self.note_edit.setText(group.note)
         self.class_combo.setCurrentIndex(max(self.class_combo.findData(group.class_id), 0))
+
+    def _set_group_color(self, color: str) -> None:
+        self._group_color = color
+        self.color_button.setText(color)
+        self.color_button.setStyleSheet(
+            f"QPushButton {{ background-color: {color}; color: white; }}"
+        )
+
+    def choose_group_color(self) -> None:
+        if not self._active_group():
+            return
+        color = QColorDialog.getColor(QColor(self._group_color), self, "选择面组颜色")
+        if color.isValid():
+            self._set_group_color(color.name().upper())
 
     def _group_selected(self, item: QTreeWidgetItem) -> None:
         value = item.data(0, Qt.UserRole)
         if isinstance(self.document, FaceAnnotationDocument):
             self.active_group_id = value
-            group = self._active_group()
-            self.selected_face_ids = set(group.face_ids if group else [])
+            self.selected_face_ids.clear()
             self._load_active_group_metadata()
             self._redraw_faces()
         else:
@@ -375,28 +419,49 @@ class MainWindow(QMainWindow):
                     self.candidate_combo.addItem(f"候选 {index}：{len(candidate.result_shapes)} 个实体")
                 self.preview_index = 0 if self.candidates else -1
             return
-        modifiers = QApplication.keyboardModifiers()
-        updated = update_face_selection(self.selected_face_ids, {face_id}, int(modifiers))
-        if updated == self.selected_face_ids:
-            return
-        self._remember()
-        self.selected_face_ids = updated
-        self._redraw_faces()
+        self._toggle_group_faces({face_id}, point_pick=True)
 
     def _faces_box_selected(self, face_ids: list[str]) -> None:
         if not isinstance(self.document, FaceAnnotationDocument):
             return
+        self._toggle_group_faces(set(face_ids))
+
+    def _toggle_group_faces(self, face_ids: set[str], point_pick: bool = False) -> None:
+        group = self._active_group()
+        if not group:
+            if face_ids:
+                self.status_label.setText("请先在左侧选择或新建一个面组")
+            return
+        face_ids &= {face.id for face in self.document.faces}
+        if not face_ids:
+            if not point_pick:
+                self.clear_selection()
+            return
         modifiers = QApplication.keyboardModifiers()
-        incoming = set(face_ids)
-        if not incoming and not (modifiers & (Qt.ShiftModifier | Qt.ControlModifier)):
-            updated = set()
+        current = set(group.face_ids)
+        if modifiers & Qt.ControlModifier:
+            to_remove = face_ids & current
+            to_add = set()
+        elif modifiers & Qt.ShiftModifier:
+            to_remove = set()
+            to_add = face_ids - current
+        elif point_pick:
+            to_remove = face_ids & current
+            to_add = face_ids - current
         else:
-            updated = update_face_selection(self.selected_face_ids, incoming, int(modifiers))
-        if updated == self.selected_face_ids:
+            to_remove = face_ids & current
+            to_add = face_ids - current
+        if not to_add and not to_remove:
             return
         self._remember()
-        self.selected_face_ids = updated
-        self._redraw_faces()
+        for other in self.document.groups:
+            if other.id != group.id and to_add:
+                other.face_ids = [face_id for face_id in other.face_ids if face_id not in to_add]
+        group.face_ids = sorted((current | to_add) - to_remove)
+        self.selected_face_ids.difference_update(to_remove)
+        self.selected_face_ids.update(to_add)
+        self._refresh_ui()
+        self.save(silent=True)
 
     def confirm_split(self) -> None:
         """Compatibility entry point for 2.0 documents and older integrations."""
@@ -428,6 +493,7 @@ class MainWindow(QMainWindow):
         self.save(silent=True)
 
     def merge_selected(self) -> None:
+        """Compatibility helper for integrations using the previous workflow."""
         group = self._active_group()
         if not group or not self.selected_face_ids:
             return
@@ -449,8 +515,7 @@ class MainWindow(QMainWindow):
         group.name = self.name_edit.text().strip() or group.id
         group.note = self.note_edit.text().strip()
         group.class_id = self.class_combo.currentData()
-        category = self.document.class_by_id(group.class_id)
-        group.color = color_for_group(self.document, group) if not category else category.color
+        group.color = self._group_color
         self._refresh_ui()
         self.save(silent=True)
 
@@ -531,7 +596,6 @@ class MainWindow(QMainWindow):
         if not self.document or not self.step_path:
             return
         self.document.annotator = self.annotator_edit.text().strip()
-        self.document.reviewer = self.reviewer_edit.text().strip()
         errors = self.document.validate()
         if errors:
             if not silent:
