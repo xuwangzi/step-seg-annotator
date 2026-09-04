@@ -12,8 +12,8 @@ from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_Viewer
-from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt5.QtWidgets import QRubberBand, QWidget
+from PyQt5.QtCore import QPoint, Qt, pyqtSignal
+from PyQt5.QtWidgets import QWidget
 
 from .face_partition import FacePartition
 from .topology import ENTITY_COLORS, EntityShape
@@ -22,6 +22,7 @@ from .topology import ENTITY_COLORS, EntityShape
 class OccViewport(QWidget):
     face_picked = pyqtSignal(str, str)
     faces_box_selected = pyqtSignal(list)
+    faces_continuous_selected = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -29,6 +30,7 @@ class OccViewport(QWidget):
         self.setAttribute(Qt.WA_PaintOnScreen)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._initialized = False
         self._press = QPoint()
         self._last = QPoint()
@@ -37,14 +39,9 @@ class OccViewport(QWidget):
         self._ais_by_id: dict[str, AIS_ColoredShape] = {}
         self._hidden_ids: set[str] = set()
         self._wireframe = False
-        self._box_mode = False
-        self._box_rect: QRect | None = None
-        self._rubber_band = QRubberBand(QRubberBand.Rectangle, self)
-        self._rubber_band.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self._rubber_band.setStyleSheet(
-            "QRubberBand { border: 1px dashed #FACC15; background: rgba(250, 204, 21, 45); }"
-        )
-        self._rubber_band.hide()
+        self._continuous_mode = False
+        self._space_down = False
+        self._continuous_seen: set[str] = set()
         self._connection = Aspect_DisplayConnection()
         self._driver = OpenGl_GraphicDriver(self._connection)
         self._viewer = V3d_Viewer(self._driver)
@@ -113,8 +110,7 @@ class OccViewport(QWidget):
         self._ais_by_id.clear()
         self._entities = []
         self._partition = None
-        self._box_rect = None
-        self._rubber_band.hide()
+        self._continuous_seen.clear()
 
     def display_entities(
         self,
@@ -146,20 +142,27 @@ class OccViewport(QWidget):
         if fit:
             self.fit_all()
 
-    def set_face_colors(self, colors: dict[str, str]) -> None:
-        if not self._partition:
-            return
+    def set_face_colors(self, partition: FacePartition, colors: dict[str, str]) -> bool:
+        if self._partition is not partition:
+            return False
         for face_id, face in self._partition.faces.items():
             ais = self._ais_by_id.get(face_id)
             if ais:
                 ais.SetColor(self._occ_color(colors.get(face_id, "#8B8B8B")))
                 self._context.Redisplay(ais, False)
         self._view.Redraw()
+        return True
+
+    def set_continuous_mode(self, enabled: bool) -> None:
+        self._continuous_mode = enabled
+        self._space_down = False
+        self._continuous_seen.clear()
+        if enabled:
+            self.setFocus(Qt.OtherFocusReason)
 
     def set_box_mode(self, enabled: bool) -> None:
-        self._box_mode = enabled
-        self._box_rect = None
-        self._rubber_band.hide()
+        """Compatibility alias for integrations using the former box mode."""
+        self.set_continuous_mode(enabled)
 
     def display_preview(
         self,
@@ -211,20 +214,23 @@ class OccViewport(QWidget):
         self._view.SetZoom(1.15 if event.angleDelta().y() > 0 else 0.87)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        self.setFocus(Qt.MouseFocusReason)
         self._press = event.pos()
         self._last = self._press
-        if event.button() == Qt.LeftButton and self._box_mode:
-            self._box_rect = QRect(self._press, self._press)
-            self._rubber_band.setGeometry(self._box_rect)
-            self._rubber_band.show()
-        elif event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton:
             self._view.StartRotation(self._press.x(), self._press.y())
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         position = event.pos()
-        if self._box_mode and self._box_rect is not None and event.buttons() & Qt.LeftButton:
-            self._box_rect.setBottomRight(position)
-            self._rubber_band.setGeometry(self._box_rect.normalized())
+        if self._continuous_mode and self._space_down:
+            self._context.MoveTo(position.x(), position.y(), self._view, True)
+            if self._context.HasDetectedShape() and self._partition:
+                picked = self._context.DetectedShape()
+                for face_id, face in self._partition.faces.items():
+                    if face_id not in self._continuous_seen and face.IsSame(picked):
+                        self._continuous_seen.add(face_id)
+                        self.faces_continuous_selected.emit([face_id])
+                        break
         elif event.buttons() & Qt.LeftButton and event.modifiers() == Qt.NoModifier:
             self._view.Rotation(position.x(), position.y())
         elif event.buttons() & Qt.MiddleButton:
@@ -238,28 +244,7 @@ class OccViewport(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         position = event.pos()
         distance = abs(position.x() - self._press.x()) + abs(position.y() - self._press.y())
-        if self._box_mode and event.button() == Qt.LeftButton and self._box_rect is not None:
-            rect = self._box_rect.normalized()
-            self._box_rect = None
-            self._rubber_band.hide()
-            selected: list[str] = []
-            if rect.width() >= 4 and rect.height() >= 4 and self._partition:
-                self._context.ClearSelected(False)
-                self._context.Select(
-                    rect.left(), rect.top(), rect.right(), rect.bottom(), self._view, True
-                )
-                self._context.InitSelected()
-                seen: set[str] = set()
-                while self._context.MoreSelected():
-                    picked = self._context.SelectedShape()
-                    for face_id, face in self._partition.faces.items():
-                        if face_id not in seen and face.IsSame(picked):
-                            seen.add(face_id)
-                            selected.append(face_id)
-                            break
-                    self._context.NextSelected()
-            self.faces_box_selected.emit(selected)
-        elif event.button() == Qt.LeftButton and distance < 5:
+        if event.button() == Qt.LeftButton and distance < 5 and not self._space_down:
             self._context.MoveTo(position.x(), position.y(), self._view, True)
             # Read only the face currently under the cursor. Calling Select()
             # here accumulates detected owners in the selection list and can
@@ -277,3 +262,26 @@ class OccViewport(QWidget):
                 if face_id:
                     self.face_picked.emit(entity.id, face_id)
                     break
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key_Space and self._continuous_mode:
+            if not event.isAutoRepeat():
+                self._space_down = True
+                self._continuous_seen.clear()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key_Space:
+            if not event.isAutoRepeat():
+                self._space_down = False
+                self._continuous_seen.clear()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # type: ignore[override]
+        self._space_down = False
+        self._continuous_seen.clear()
+        super().focusOutEvent(event)

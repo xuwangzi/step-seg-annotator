@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         self.viewport = OccViewport(splitter)
         self.viewport.face_picked.connect(self._face_picked)
         self.viewport.faces_box_selected.connect(self._faces_box_selected)
+        self.viewport.faces_continuous_selected.connect(self._faces_continuous_selected)
         splitter.addWidget(self.viewport)
         splitter.addWidget(self._make_right_panel())
         splitter.setSizes([300, 850, 350])
@@ -271,14 +272,14 @@ class MainWindow(QMainWindow):
         mode_row = QHBoxLayout()
         self.point_button = QPushButton("面点选")
         self.point_button.setCheckable(True)
-        self.box_button = QPushButton("面框选")
+        self.box_button = QPushButton("面连选")
         self.box_button.setCheckable(True)
         mode_group = QButtonGroup(self)
         mode_group.setExclusive(True)
         mode_group.addButton(self.point_button)
         mode_group.addButton(self.box_button)
         self.point_button.setChecked(True)
-        self.box_button.toggled.connect(self.viewport_box_mode_changed)
+        self.box_button.toggled.connect(self.viewport_continuous_mode_changed)
         mode_row.addWidget(self.point_button)
         mode_row.addWidget(self.box_button)
         operation_layout.addLayout(mode_row)
@@ -324,7 +325,10 @@ class MainWindow(QMainWindow):
         return panel
 
     def viewport_box_mode_changed(self, enabled: bool) -> None:
-        self.viewport.set_box_mode(enabled)
+        self.viewport_continuous_mode_changed(enabled)
+
+    def viewport_continuous_mode_changed(self, enabled: bool) -> None:
+        self.viewport.set_continuous_mode(enabled)
 
     def _choose_step(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "选择 STEP 文件", "", "STEP (*.step *.stp)")
@@ -502,7 +506,10 @@ class MainWindow(QMainWindow):
         )
         for face_id in self.selected_face_ids:
             colors[face_id] = "#FACC15"
-        self.viewport.display_partition(self.partition, colors, fit=fit)
+        if not self.viewport.set_face_colors(self.partition, colors):
+            self.viewport.display_partition(self.partition, colors, fit=fit)
+        elif fit:
+            self.viewport.fit_all()
         self.selection_label.setText(f"已选择 {len(self.selected_face_ids)} 个细面；面组 {self.active_group_id or '-'}")
 
     def _active_group(self) -> FaceGroupRecord | None:
@@ -591,7 +598,14 @@ class MainWindow(QMainWindow):
             return
         self._toggle_group_faces(set(face_ids))
 
-    def _toggle_group_faces(self, face_ids: set[str], point_pick: bool = False) -> None:
+    def _faces_continuous_selected(self, face_ids: list[str]) -> None:
+        if not isinstance(self.document, FaceAnnotationDocument):
+            return
+        self._toggle_group_faces(set(face_ids), force_add=True)
+
+    def _toggle_group_faces(
+        self, face_ids: set[str], point_pick: bool = False, force_add: bool = False
+    ) -> None:
         group = self._active_group()
         if not group:
             if face_ids:
@@ -614,7 +628,7 @@ class MainWindow(QMainWindow):
         if modifiers & Qt.ControlModifier:
             to_remove = face_ids & current
             to_add = set()
-        elif modifiers & Qt.ShiftModifier:
+        elif force_add or modifiers & Qt.ShiftModifier:
             to_remove = set()
             to_add = face_ids - current
         elif point_pick:
