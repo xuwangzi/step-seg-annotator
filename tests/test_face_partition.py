@@ -16,6 +16,7 @@ from stepseg.app import (
     GROUP_COLORS,
     available_faces_for_group,
     color_for_group,
+    pending_face_ids,
     step_files_in_folder,
     update_face_selection,
 )
@@ -154,6 +155,18 @@ def test_faces_owned_by_another_group_are_not_available() -> None:
         "face_2",
         "face_3",
     }
+
+
+def test_only_newly_assigned_faces_are_pending_yellow_faces() -> None:
+    faces = [
+        FaceRecord(f"face_{index}", "plane", 1, (0, 0, 0), (0, 0, 0, 1, 1, 1))
+        for index in range(1, 3)
+    ]
+    document = FaceAnnotationDocument("x", "y", "z", "fused", "snapshot", "hash", faces)
+    group = FaceGroupRecord("group_1", "first", face_ids=["face_1", "face_2"])
+    document.groups = [group]
+    assert pending_face_ids(document, {"face_1": "group_1"}, "group_1") == {"face_2"}
+    assert pending_face_ids(document, {"face_1": "group_1", "face_2": "group_1"}, "group_1") == set()
 
 
 def test_step_files_in_folder_is_stable_and_filters_other_files(tmp_path: Path) -> None:

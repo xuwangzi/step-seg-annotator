@@ -70,6 +70,18 @@ def available_faces_for_group(
     return set(face_ids) - assigned_elsewhere
 
 
+def pending_face_ids(
+    document: FaceAnnotationDocument, saved_assignments: dict[str, str], group_id: str
+) -> set[str]:
+    """Return faces newly assigned to a group since the last successful save."""
+    assignments = document.assignments()
+    return {
+        face_id
+        for face_id, assigned_group_id in assignments.items()
+        if assigned_group_id == group_id and saved_assignments.get(face_id) != group_id
+    }
+
+
 def step_files_in_folder(folder: Path) -> list[Path]:
     """Return direct STEP files in a folder in a stable display order."""
     return sorted(
@@ -148,10 +160,12 @@ class MainWindow(QMainWindow):
         self.active_entity_id = ""
         self.active_group_id = ""
         self.selected_face_ids: set[str] = set()
+        self._saved_assignments: dict[str, str] = {}
+        self._face_changes_pending = False
         self.hidden_group_ids: set[str] = set()
         self.candidates = []
         self.preview_index = -1
-        self._history: list[tuple[object, set[str], str]] = []
+        self._history: list[tuple[object, set[str], str, dict[str, str], bool]] = []
         self._build_ui()
         if initial_path:
             self.open_step(initial_path)
@@ -405,6 +419,8 @@ class MainWindow(QMainWindow):
                 self.partition = partition
                 self.document = face_document_for(path, partition, snapshot)
             self.step_path = path
+            self._saved_assignments = self.document.assignments() if isinstance(self.document, FaceAnnotationDocument) else {}
+            self._face_changes_pending = False
             self._refresh_step_tree()
             self._history.clear()
             self.selected_face_ids.clear()
@@ -481,6 +497,9 @@ class MainWindow(QMainWindow):
                 group.color = group_color
                 for face_id in group.face_ids:
                     colors[face_id] = group_color
+        self.selected_face_ids = pending_face_ids(
+            self.document, self._saved_assignments, self.active_group_id
+        )
         for face_id in self.selected_face_ids:
             colors[face_id] = "#FACC15"
         self.viewport.display_partition(self.partition, colors, fit=fit)
@@ -544,7 +563,15 @@ class MainWindow(QMainWindow):
 
     def _remember(self) -> None:
         if isinstance(self.document, FaceAnnotationDocument):
-            self._history.append((copy.deepcopy(self.document), set(self.selected_face_ids), self.active_group_id))
+            self._history.append(
+                (
+                    copy.deepcopy(self.document),
+                    set(self.selected_face_ids),
+                    self.active_group_id,
+                    dict(self._saved_assignments),
+                    self._face_changes_pending,
+                )
+            )
 
     def _face_picked(self, entity_id: str, face_id: str) -> None:
         if not isinstance(self.document, FaceAnnotationDocument):
@@ -605,8 +632,10 @@ class MainWindow(QMainWindow):
         group.face_ids = sorted((current | to_add) - to_remove)
         self.selected_face_ids.difference_update(to_remove)
         self.selected_face_ids.update(to_add)
+        self._face_changes_pending = (
+            self.document.assignments() != self._saved_assignments
+        )
         self._refresh_ui()
-        self.save(silent=True)
 
     def confirm_split(self) -> None:
         """Compatibility entry point for 2.0 documents and older integrations."""
@@ -619,7 +648,9 @@ class MainWindow(QMainWindow):
         self.save(silent=True)
 
     def clear_selection(self) -> None:
-        if self.selected_face_ids:
+        if self._face_changes_pending:
+            self.save(silent=True)
+        elif self.selected_face_ids:
             self._remember()
             self.selected_face_ids.clear()
             self._redraw_faces()
@@ -692,8 +723,12 @@ class MainWindow(QMainWindow):
 
     def undo(self) -> None:
         if isinstance(self.document, FaceAnnotationDocument) and self._history:
-            document, selected, active = self._history.pop()
-            self.document, self.selected_face_ids, self.active_group_id = document, selected, active
+            document, selected, active, saved_assignments, changes_pending = self._history.pop()
+            self.document = document
+            self.selected_face_ids = selected
+            self.active_group_id = active
+            self._saved_assignments = saved_assignments
+            self._face_changes_pending = changes_pending
             self._refresh_ui()
             self.save(silent=True)
         elif isinstance(self.document, AnnotationDocument) and self.step_path and self.document.split_operations:
@@ -748,6 +783,11 @@ class MainWindow(QMainWindow):
             return
             return
         save_document(annotation_path_for(self.step_path), self.document)
+        if isinstance(self.document, FaceAnnotationDocument):
+            self._saved_assignments = self.document.assignments()
+            self._face_changes_pending = False
+            self.selected_face_ids.clear()
+            self._redraw_faces()
         self._update_current_step_status()
         self.status_label.setText("已自动保存" if silent else "已保存")
 
