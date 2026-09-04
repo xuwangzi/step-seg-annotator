@@ -151,6 +151,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.selection_label)
         self.candidate_combo = QComboBox()  # legacy 2.0 compatibility
         self.candidate_combo.hide()
+        self.legacy_confirm_button = QPushButton("确认旧版实体切分")
+        self.legacy_confirm_button.clicked.connect(self.confirm_split)
+        self.legacy_confirm_button.hide()
+        layout.addWidget(self.legacy_confirm_button)
         self.box_button = QPushButton("面框选")
         self.box_button.setCheckable(True)
         self.box_button.toggled.connect(self.viewport_box_mode_changed)
@@ -235,6 +239,9 @@ class MainWindow(QMainWindow):
             self.status_combo.setCurrentText(self.document.status)
             self.status_combo.blockSignals(False)
             self._refresh_ui(fit=True)
+            legacy = isinstance(self.document, AnnotationDocument)
+            self.candidate_combo.setVisible(legacy)
+            self.legacy_confirm_button.setVisible(legacy)
             count = len(self.document.faces) if isinstance(self.document, FaceAnnotationDocument) else len(self.entities)
             self.status_label.setText(f"已载入 {path.name}：{count} 个" + ("细面" if isinstance(self.document, FaceAnnotationDocument) else "闭合实体"))
         except Exception as error:
