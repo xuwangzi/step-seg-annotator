@@ -60,6 +60,7 @@ def main() -> None:
         assert window.step_tree.headerItem().text(0) == "文件"
         assert window.step_tree.headerItem().text(1) == "状态"
         assert window.selection_mode_button.text() == "面点选"
+        assert "按住空格" in window.selection_hint.text()
         window._continuous_state_changed(True)
         assert window.selection_mode_button.text() == "面连选"
         window._continuous_state_changed(False)

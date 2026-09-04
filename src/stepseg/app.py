@@ -274,6 +274,10 @@ class MainWindow(QMainWindow):
         self.selection_mode_button.setFocusPolicy(Qt.NoFocus)
         self.selection_mode_button.setToolTip("普通点选；按住空格并移动鼠标进行面连选")
         operation_layout.addWidget(self.selection_mode_button)
+        self.selection_hint = QLabel("不按空格：面点选；按住空格并移动鼠标：面连选")
+        self.selection_hint.setWordWrap(True)
+        self.selection_hint.setStyleSheet("color: #666666;")
+        operation_layout.addWidget(self.selection_hint)
         self.box_button = self.selection_mode_button  # compatibility with the former mode control
         self.selection_label = QLabel("选择面后将直接添加到当前面组")
         self.selection_label.setWordWrap(True)
