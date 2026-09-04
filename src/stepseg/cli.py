@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from .export import export_faces, export_solids
-from .face_partition import file_sha256, load_partition_snapshot, partition_matches_document
+from .face_partition import file_sha256, load_partition_snapshot, partition_matches_document, resolve_snapshot_path
 from .models import FaceAnnotationDocument
 from .storage import load_document, source_matches
 from .topology import geometry_signature, load_step, replay_document
@@ -41,7 +41,7 @@ def main() -> None:
             errors.append(f"source STEP does not exist: {source_path}")
         elif not source_matches(source_path, document):
             errors.append("source STEP hash does not match")
-        snapshot = Path(document.snapshot_path)
+        snapshot = resolve_snapshot_path(document)
         if not snapshot.exists():
             errors.append(f"partition snapshot does not exist: {snapshot}")
         elif file_sha256(snapshot) != document.snapshot_sha256:

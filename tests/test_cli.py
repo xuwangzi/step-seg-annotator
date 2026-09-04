@@ -8,6 +8,8 @@ from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
 from stepseg.storage import save_document
 from stepseg.topology import load_step, new_document
+from stepseg.face_partition import face_document_for, load_or_create_partition
+from stepseg.models import FaceGroupRecord
 
 
 def write_step(path: Path) -> None:
@@ -52,3 +54,23 @@ def test_cli_inspect_validate_and_export(tmp_path: Path) -> None:
     assert (output / "combined.step").is_file()
     assert (output / "manifest.json").is_file()
     assert (output / "entities" / "entity_0001.step").is_file()
+
+
+def test_cli_validate_and_export_faces(tmp_path: Path) -> None:
+    source = tmp_path / "faces.step"
+    write_step(source)
+    partition, snapshot, _ = load_or_create_partition(source)
+    document = face_document_for(source, partition, snapshot)
+    document.groups = [FaceGroupRecord("group_0001", "all", face_ids=[face.id for face in document.faces])]
+    annotation = tmp_path / "faces.stepseg.json"
+    save_document(annotation, document)
+
+    validated = run_cli("validate", str(annotation))
+    assert validated.returncode == 0, validated.stderr
+    assert "valid:" in validated.stdout
+
+    output = tmp_path / "face-exports"
+    exported = run_cli("export-faces", str(annotation), "--output", str(output))
+    assert exported.returncode == 0, exported.stderr
+    assert (output / "partition.step").is_file()
+    assert (output / "manifest.json").is_file()

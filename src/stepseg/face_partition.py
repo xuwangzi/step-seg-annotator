@@ -484,7 +484,7 @@ def face_document_for(
         source_sha256=source_sha256,
         ocp_version=OCP.__version__,
         fusion_mode=partition.fusion_mode,
-        snapshot_path=str(snapshot.resolve()),
+        snapshot_path=str(snapshot.resolve().relative_to(step_path.resolve().parent)),
         snapshot_sha256=file_sha256(snapshot),
         faces=partition.records,
     )
@@ -501,3 +501,8 @@ def partition_matches_document(partition: FacePartition, document: FaceAnnotatio
         if any(abs(a - b) > 1e-7 for a, b in zip(actual.centroid, expected.centroid, strict=True)):
             return False
     return True
+
+
+def resolve_snapshot_path(document: FaceAnnotationDocument) -> Path:
+    value = Path(document.snapshot_path)
+    return value if value.is_absolute() else Path(document.source_path).resolve().parent / value

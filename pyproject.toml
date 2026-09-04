@@ -1,7 +1,7 @@
 [project]
 name = "stepseg"
-version = "0.2.3"
-description = "Interactive STEP closed-solid segmentation tool"
+version = "0.3.0"
+description = "Interactive STEP face segmentation annotation tool"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
 from .export import export_faces, export_solids
 from .face_partition import (
     FacePartition, face_document_for, file_sha256, load_or_create_partition,
-    load_partition_snapshot, partition_matches_document,
+    load_partition_snapshot, partition_matches_document, resolve_snapshot_path,
 )
 from .models import AnnotationDocument, FaceAnnotationDocument, FaceGroupRecord, TaxonomyClass, annotation_path_for
 from .storage import load_document, save_document, source_matches
@@ -207,11 +207,11 @@ class MainWindow(QMainWindow):
                 if isinstance(document, FaceAnnotationDocument):
                     if not source_matches(path, document) or document.ocp_version != OCP.__version__:
                         raise ValueError("源 STEP 或 OpenCascade 版本与面标注不一致")
-                    snapshot = Path(document.snapshot_path)
+                    snapshot = resolve_snapshot_path(document)
                     rebuild = not snapshot.exists() or file_sha256(snapshot) != document.snapshot_sha256
                     if rebuild:
                         partition, snapshot, _ = load_or_create_partition(path, snapshot, force=True)
-                        document.snapshot_path = str(snapshot.resolve())
+                        document.snapshot_path = str(snapshot.resolve().relative_to(path.resolve().parent))
                         document.snapshot_sha256 = file_sha256(snapshot)
                     else:
                         partition = load_partition_snapshot(snapshot)

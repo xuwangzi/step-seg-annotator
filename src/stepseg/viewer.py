@@ -238,16 +238,12 @@ class OccViewport(QWidget):
             self._box_rect = None
             self.update()
             if rect.width() >= 4 and rect.height() >= 4:
-                self._context.Select(rect.left(), rect.top(), rect.right(), rect.bottom(), self._view, True)
-                selected: list[str] = []
-                self._context.InitSelected()
-                while self._context.MoreSelected():
-                    picked = self._context.SelectedShape()
-                    if self._partition:
-                        for face_id, face in self._partition.faces.items():
-                            if face.IsSame(picked) and face_id not in selected:
-                                selected.append(face_id)
-                    self._context.NextSelected()
+                selected = []
+                if self._partition:
+                    for record in self._partition.records:
+                        x, y = self._view.Convert(*record.centroid)
+                        if rect.contains(x, y):
+                            selected.append(record.id)
                 self.faces_box_selected.emit(selected)
         elif event.button() == Qt.LeftButton and distance < 5:
             self._context.MoveTo(position.x(), position.y(), self._view, True)
