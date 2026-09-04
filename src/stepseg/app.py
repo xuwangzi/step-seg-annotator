@@ -57,6 +57,19 @@ def color_for_group(document: FaceAnnotationDocument, group: FaceGroupRecord) ->
     return category.color.upper() if category else "#71717A"
 
 
+def available_faces_for_group(
+    document: FaceAnnotationDocument, group: FaceGroupRecord, face_ids: set[str]
+) -> set[str]:
+    """Return faces that are unassigned or already owned by the active group."""
+    assigned_elsewhere = {
+        face_id
+        for other in document.groups
+        if other.id != group.id
+        for face_id in other.face_ids
+    }
+    return set(face_ids) - assigned_elsewhere
+
+
 class TaxonomyDialog(QDialog):
     def __init__(self, taxonomy: list[TaxonomyClass], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -167,7 +180,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.addWidget(QLabel("面组"))
         self.group_tree = QTreeWidget()
-        self.group_tree.setHeaderLabels(["显示", "面组", "类别", "面数"])
+        self.group_tree.setHeaderLabels(["显示", "面组", "类别", "面数", "颜色"])
+        self.group_tree.setColumnWidth(0, 42)
+        self.group_tree.setColumnWidth(4, 66)
         self.group_tree.itemClicked.connect(self._group_selected)
         self.group_tree.itemChanged.connect(self._visibility_changed)
         layout.addWidget(self.group_tree)
@@ -320,9 +335,22 @@ class MainWindow(QMainWindow):
         if isinstance(self.document, FaceAnnotationDocument):
             for group in self.document.groups:
                 category = self.document.class_by_id(group.class_id)
-                item = QTreeWidgetItem(["", group.name or group.id, category.name_zh if category else "未分类", str(len(group.face_ids))])
+                group_color = color_for_group(self.document, group)
+                group.color = group_color
+                item = QTreeWidgetItem(
+                    [
+                        "",
+                        group.name or group.id,
+                        category.name_zh if category else "未分类",
+                        str(len(group.face_ids)),
+                        group_color,
+                    ]
+                )
                 item.setData(0, Qt.UserRole, group.id)
                 item.setCheckState(0, Qt.Unchecked if group.id in self.hidden_group_ids else Qt.Checked)
+                item.setBackground(4, QColor(group_color))
+                item.setForeground(4, QColor("#FFFFFF"))
+                item.setToolTip(4, group_color)
                 self.group_tree.addTopLevelItem(item)
                 if group.id == self.active_group_id:
                     self.group_tree.setCurrentItem(item)
@@ -387,6 +415,9 @@ class MainWindow(QMainWindow):
     def _group_selected(self, item: QTreeWidgetItem) -> None:
         value = item.data(0, Qt.UserRole)
         if isinstance(self.document, FaceAnnotationDocument):
+            if value == self.active_group_id:
+                return
+            self.save(silent=True)
             self.active_group_id = value
             self.selected_face_ids.clear()
             self._load_active_group_metadata()
@@ -439,6 +470,13 @@ class MainWindow(QMainWindow):
             return
         modifiers = QApplication.keyboardModifiers()
         current = set(group.face_ids)
+        available = available_faces_for_group(self.document, group, face_ids)
+        blocked = face_ids - available
+        face_ids = available
+        if blocked:
+            self.status_label.setText(f"已有 {len(blocked)} 个面属于其他面组，无法重复选择")
+        if not face_ids:
+            return
         if modifiers & Qt.ControlModifier:
             to_remove = face_ids & current
             to_add = set()

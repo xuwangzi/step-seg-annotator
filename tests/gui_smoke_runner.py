@@ -50,6 +50,13 @@ def main() -> None:
             "标注",
             "视图",
         ]
+        assert [window.group_tree.headerItem().text(index) for index in range(5)] == [
+            "显示",
+            "面组",
+            "类别",
+            "面数",
+            "颜色",
+        ]
         window.step_path = source_path
         window.entities = [entity]
         window.document = new_document(source_path, window.entities)

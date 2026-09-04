@@ -12,7 +12,12 @@ from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 import stepseg.face_partition as face_partition
 from stepseg.export import export_faces
-from stepseg.app import GROUP_COLORS, color_for_group, update_face_selection
+from stepseg.app import (
+    GROUP_COLORS,
+    available_faces_for_group,
+    color_for_group,
+    update_face_selection,
+)
 from stepseg.models import FaceAnnotationDocument, FaceGroupRecord, FaceRecord
 from stepseg.storage import load_document, save_document, sha256_file
 from stepseg.topology import build_entity
@@ -133,3 +138,18 @@ def test_unclassified_groups_get_distinct_stable_colors() -> None:
     document.groups = [first, second]
     assert color_for_group(document, first) == GROUP_COLORS[0]
     assert color_for_group(document, second) == GROUP_COLORS[1]
+
+
+def test_faces_owned_by_another_group_are_not_available() -> None:
+    faces = [
+        FaceRecord(f"face_{index}", "plane", 1, (0, 0, 0), (0, 0, 0, 1, 1, 1))
+        for index in range(1, 4)
+    ]
+    document = FaceAnnotationDocument("x", "y", "z", "fused", "snapshot", "hash", faces)
+    first = FaceGroupRecord("group_1", "first", face_ids=["face_1"])
+    second = FaceGroupRecord("group_2", "second", face_ids=["face_2"])
+    document.groups = [first, second]
+    assert available_faces_for_group(document, second, {"face_1", "face_2", "face_3"}) == {
+        "face_2",
+        "face_3",
+    }
