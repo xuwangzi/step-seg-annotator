@@ -258,7 +258,18 @@ def _face_area_centroid(face: TopoDS_Face) -> tuple[float, tuple[float, float, f
 
 
 def _surface_kind(face: TopoDS_Face) -> str:
-    name = _name(BRep_Tool.Surface_s(face))
+    surface = BRep_Tool.Surface_s(face)
+    # STEP writers may wrap the same analytic surface in a rectangular or
+    # trimmed surface. Use its basis surface so face ordering survives a
+    # snapshot write/read round trip.
+    for _ in range(4):
+        if not hasattr(surface, "BasisSurface"):
+            break
+        basis = surface.BasisSurface()
+        if basis is surface:
+            break
+        surface = basis
+    name = _name(surface)
     return name.removeprefix("Geom_").lower() or "unknown"
 
 

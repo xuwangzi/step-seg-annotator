@@ -5,7 +5,7 @@ import pytest
 from PyQt5.QtCore import Qt
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 from OCP.GProp import GProp_GProps
 from OCP.Geom import Geom_Circle, Geom_Ellipse, Geom_Line
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
@@ -169,6 +169,18 @@ def test_snapshot_document_round_trip_and_export(tmp_path: Path) -> None:
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert {face["group_id"] for face in manifest["faces"]} == {"group_0001"}
     assert sha256_file(face_partition.resolve_snapshot_path(restored)) == restored.snapshot_sha256
+
+
+def test_snapshot_round_trip_preserves_cylindrical_face_ids(tmp_path: Path) -> None:
+    source = tmp_path / "cylinder.step"
+    face_partition.write_partition_step(
+        BRepPrimAPI_MakeCylinder(3, 5).Shape(), source
+    )
+    partition, snapshot, _ = face_partition.load_or_create_partition(source)
+    document = face_partition.face_document_for(source, partition, snapshot)
+    restored = face_partition.load_partition_snapshot(snapshot)
+
+    assert face_partition.partition_matches_document(restored, document)
 
 
 def test_face_selection_is_unique_and_supports_add_remove() -> None:
