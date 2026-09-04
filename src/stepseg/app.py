@@ -70,6 +70,18 @@ def available_faces_for_group(
     return set(face_ids) - assigned_elsewhere
 
 
+def step_files_in_folder(folder: Path) -> list[Path]:
+    """Return direct STEP files in a folder in a stable display order."""
+    return sorted(
+        (
+            path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in {".step", ".stp"}
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+
+
 class TaxonomyDialog(QDialog):
     def __init__(self, taxonomy: list[TaxonomyClass], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -128,6 +140,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("STEP 面分割标注工具")
         self.resize(1500, 900)
         self.step_path: Path | None = None
+        self.folder_path: Path | None = None
+        self.step_paths: list[Path] = []
         self.document: AnnotationDocument | FaceAnnotationDocument | None = None
         self.entities: list[EntityShape] = []
         self.partition: FacePartition | None = None
@@ -147,6 +161,7 @@ class MainWindow(QMainWindow):
         menu_bar.setNativeMenuBar(False)
         file_menu = menu_bar.addMenu("文件")
         file_menu.addAction("打开 STEP", self._choose_step)
+        file_menu.addAction("打开文件夹", self._choose_folder)
         file_menu.addSeparator()
         file_menu.addAction("保存", self.save)
         file_menu.addAction("导出面分割", self.export)
@@ -178,7 +193,23 @@ class MainWindow(QMainWindow):
     def _make_left_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("面组"))
+
+        file_panel = QWidget()
+        file_layout = QVBoxLayout(file_panel)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.addWidget(QLabel("STEP 文件"))
+        self.step_tree = QTreeWidget()
+        self.step_tree.setHeaderLabels(["文件", "状态"])
+        self.step_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.step_tree.header().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.step_tree.setColumnWidth(1, 64)
+        self.step_tree.itemClicked.connect(self._step_selected)
+        file_layout.addWidget(self.step_tree)
+
+        group_panel = QWidget()
+        group_layout = QVBoxLayout(group_panel)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.addWidget(QLabel("面组"))
         self.group_tree = QTreeWidget()
         self.group_tree.setHeaderLabels(["显示", "面组", "类别", "面数", "颜色"])
         header = self.group_tree.header()
@@ -193,7 +224,7 @@ class MainWindow(QMainWindow):
         self.group_tree.setColumnWidth(4, 66)
         self.group_tree.itemClicked.connect(self._group_selected)
         self.group_tree.itemChanged.connect(self._visibility_changed)
-        layout.addWidget(self.group_tree)
+        group_layout.addWidget(self.group_tree)
         button_row = QHBoxLayout()
         self.new_group_button = QPushButton("+ 新建面组")
         self.new_group_button.clicked.connect(self.new_group)
@@ -201,7 +232,13 @@ class MainWindow(QMainWindow):
         self.delete_group_button.clicked.connect(self.delete_group)
         button_row.addWidget(self.new_group_button)
         button_row.addWidget(self.delete_group_button)
-        layout.addLayout(button_row)
+        group_layout.addLayout(button_row)
+
+        split = QSplitter(Qt.Vertical)
+        split.addWidget(file_panel)
+        split.addWidget(group_panel)
+        split.setSizes([260, 640])
+        layout.addWidget(split)
         self.entity_tree = self.group_tree  # compatibility with the previous smoke test
         return panel
 
@@ -280,7 +317,68 @@ class MainWindow(QMainWindow):
         if filename:
             self.open_step(Path(filename))
 
-    def open_step(self, path: Path) -> None:
+    def _choose_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "选择 STEP 文件夹", "")
+        if folder:
+            self.open_folder(Path(folder))
+
+    def open_folder(self, folder: Path) -> None:
+        paths = step_files_in_folder(folder)
+        if not paths:
+            QMessageBox.warning(self, "没有 STEP 文件", f"文件夹中没有 .step 或 .stp 文件：{folder}")
+            return
+        self.folder_path = folder.resolve()
+        self.step_paths = paths
+        self._refresh_step_tree()
+        self.open_step(paths[0], update_file_list=False)
+
+    def _refresh_step_tree(self) -> None:
+        if not hasattr(self, "step_tree"):
+            return
+        current = self.step_path.resolve() if self.step_path else None
+        self.step_tree.blockSignals(True)
+        self.step_tree.clear()
+        selected_item: QTreeWidgetItem | None = None
+        for path in self.step_paths:
+            item = QTreeWidgetItem([path.name, ""])
+            item.setData(0, Qt.UserRole, str(path))
+            if annotation_path_for(path).exists():
+                try:
+                    document = load_document(annotation_path_for(path))
+                    item.setText(1, document.status)
+                except Exception:
+                    item.setText(1, "异常")
+            if current and path.resolve() == current:
+                selected_item = item
+            self.step_tree.addTopLevelItem(item)
+        if selected_item:
+            self.step_tree.setCurrentItem(selected_item)
+            selected_item.setSelected(True)
+        self.step_tree.blockSignals(False)
+
+    def _update_current_step_status(self) -> None:
+        if not self.step_path or not self.document:
+            return
+        target = self.step_path.resolve()
+        for index in range(self.step_tree.topLevelItemCount()):
+            item = self.step_tree.topLevelItem(index)
+            value = item.data(0, Qt.UserRole)
+            if value and Path(value).resolve() == target:
+                item.setText(1, self.document.status)
+                break
+
+    def _step_selected(self, item: QTreeWidgetItem, _column: int) -> None:
+        value = item.data(0, Qt.UserRole)
+        if value:
+            self.open_step(Path(value), update_file_list=False)
+
+    def open_step(self, path: Path, update_file_list: bool = True) -> None:
+        if self.step_path and self.step_path.resolve() != path.resolve():
+            self.save(silent=True)
+        if update_file_list:
+            self.folder_path = None
+            self.step_paths = [path]
+            self._refresh_step_tree()
         try:
             annotation = annotation_path_for(path)
             if annotation.exists():
@@ -307,6 +405,7 @@ class MainWindow(QMainWindow):
                 self.partition = partition
                 self.document = face_document_for(path, partition, snapshot)
             self.step_path = path
+            self._refresh_step_tree()
             self._history.clear()
             self.selected_face_ids.clear()
             self.active_group_id = ""
@@ -649,6 +748,7 @@ class MainWindow(QMainWindow):
             return
             return
         save_document(annotation_path_for(self.step_path), self.document)
+        self._update_current_step_status()
         self.status_label.setText("已自动保存" if silent else "已保存")
 
     def export(self) -> None:

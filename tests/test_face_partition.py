@@ -16,6 +16,7 @@ from stepseg.app import (
     GROUP_COLORS,
     available_faces_for_group,
     color_for_group,
+    step_files_in_folder,
     update_face_selection,
 )
 from stepseg.models import FaceAnnotationDocument, FaceGroupRecord, FaceRecord
@@ -153,3 +154,11 @@ def test_faces_owned_by_another_group_are_not_available() -> None:
         "face_2",
         "face_3",
     }
+
+
+def test_step_files_in_folder_is_stable_and_filters_other_files(tmp_path: Path) -> None:
+    (tmp_path / "B.STP").write_bytes(b"")
+    (tmp_path / "a.step").write_bytes(b"")
+    (tmp_path / "notes.txt").write_text("ignore", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    assert [path.name for path in step_files_in_folder(tmp_path)] == ["a.step", "B.STP"]
